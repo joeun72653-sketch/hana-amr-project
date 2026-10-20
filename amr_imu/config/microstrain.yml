@@ -1,0 +1,6 @@
+microstrain_inertial_driver:
+  ros__parameters:
+    port: "/dev/serial/by-id/usb-Lord_Microstrain_Lord_Inertial_Sensor_0000_6287.248359-if00"
+    baudrate: 115200
+    filter_pps_source: 0
+    filter_declination_source: 1
