@@ -340,7 +340,7 @@ class CanWorker(threading.Thread):
         can = None
         try:
             import serial
-            sys.path.insert(0, str(Path.home() / 'amr_motor_control'))
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'amr_motor_control'))
             from amr_keyboard_safe import UCan
 
             with serial.Serial(CAN_PORT, CAN_BAUD, timeout=0.02) as ser:
