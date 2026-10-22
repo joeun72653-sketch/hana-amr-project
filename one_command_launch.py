@@ -13,7 +13,6 @@ Place this file in the root of hana-amr-project, then run:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -115,23 +114,17 @@ def source_ros_environment() -> dict[str, str]:
     return env
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def verify_can_import_source() -> None:
-    """Current CAN code prepends ~/amr_motor_control to sys.path at runtime."""
+    """Require CAN to import the reviewed helper from this Git checkout."""
     repo_helper = ROOT / 'amr_motor_control/amr_keyboard_safe.py'
-    home_helper = Path.home() / 'amr_motor_control/amr_keyboard_safe.py'
     if not repo_helper.is_file():
         raise LaunchError(f'CAN helper missing: {repo_helper}')
-    if home_helper.is_file() and sha256(home_helper) != sha256(repo_helper):
+    can_source = CAN_SCRIPT.read_text(encoding='utf-8')
+    required = "sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'amr_motor_control'))"
+    if required not in can_source or 'from amr_keyboard_safe import UCan' not in can_source:
         raise LaunchError(
-            'CAN imports ~/amr_motor_control/amr_keyboard_safe.py, which differs from '
-            'the Git repository copy. In amr_ros_wheel_rpm_can.py, replace its '
-            'sys.path.insert(...) argument with '\
-            'str(Path(__file__).resolve().parent.parent / "amr_motor_control") '
-            'and recheck the diff before launching.'
+            'CAN helper import does not explicitly point to the Git repository. '
+            'Review amr_ros_wheel_rpm_can.py before launching.'
         )
 
 
