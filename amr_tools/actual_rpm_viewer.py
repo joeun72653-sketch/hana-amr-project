@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# test
 
 import json
 from datetime import datetime
