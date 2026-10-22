@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import signal
+import time
 import subprocess
 import threading
 from datetime import datetime
@@ -21,6 +22,7 @@ PORT = int(os.environ.get('AMR_CAL_PORT', '8877'))
 ORIGIN = os.environ.get('AMR_CAL_WEB_ORIGIN', f'http://{HOST}:8000').rstrip('/')
 ALLOWED_NETS = tuple(ipaddress.ip_network(item.strip(), strict=False) for item in
                      os.environ.get('AMR_CAL_ALLOWED_NETS', '192.168.0.0/24,127.0.0.0/8').split(',') if item.strip())
+CAL_FLAG = Path.home() / '.amr_calibration_active'
 LOG_DIR = Path(os.environ.get('AMR_CAL_LOG_DIR', str(Path.home() / 'amr_calibration_logs'))).expanduser()
 LAUNCH_COMMAND = ('ros2', 'launch', 'real_amr_lidar', 'real_amr_calibration.launch.py',
                   'start:=true', 'auto_reposition:=true')
@@ -58,6 +60,7 @@ def refresh_process():
                     log_handle.close()
                     log_handle = None
             proc = None
+            CAL_FLAG.unlink(missing_ok=True)
 
 
 def stop_launch(reason):
@@ -254,10 +257,13 @@ class Handler(BaseHTTPRequestHandler):
                 child_env['PYTHONUNBUFFERED'] = '1'
                 child_env['RCUTILS_COLORIZED_OUTPUT'] = '0'
                 child_env['RCUTILS_LOGGING_BUFFERED_STREAM'] = '0'
+                CAL_FLAG.touch()
+                time.sleep(0.35)
                 newproc = subprocess.Popen(LAUNCH_COMMAND, stdout=handle,
                                            stderr=subprocess.STDOUT,
                                            start_new_session=True, env=child_env)
             except (OSError, ValueError) as exc:
+                CAL_FLAG.unlink(missing_ok=True)
                 if handle is not None:
                     handle.close()
                 return self.reply(500, {'accepted': False, 'message': f'Launch 시작 실패: {exc}'})
