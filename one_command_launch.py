@@ -479,7 +479,7 @@ def main() -> int:
                 bridge_argv.append('--bench-motion')
             bridge = supervisor.start('bridge', bridge_argv,
                                       ready_markers=('[CONNECTED] Windows Server',),
-                                      fatal_markers=('[DISCONNECTED]', '[ROS ERROR]', '[FAULT]'))
+                                      fatal_markers=('[ROS ERROR]', '[FAULT]'))
             supervisor.wait_log(bridge, 30)
 
         if not args.skip_calibration:
