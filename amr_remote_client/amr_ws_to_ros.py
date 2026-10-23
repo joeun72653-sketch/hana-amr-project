@@ -254,7 +254,7 @@ async def run_bridge(bridge):
         last_ready_report = 0.0
         bridge.stop(disarm=True)
         try:
-            async with websockets.connect(SERVER, ping_interval=2, ping_timeout=2) as ws:
+            async with websockets.connect(SERVER, ping_interval=10, ping_timeout=10) as ws:
                 await send(ws, {'role': 'robot'})
                 hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
                 if hello.get('role') != 'robot' or hello.get('status') != 'connected':
