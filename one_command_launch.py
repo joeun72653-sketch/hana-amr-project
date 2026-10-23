@@ -38,6 +38,7 @@ CAN_SCRIPT = ROOT / 'amr_remote_client/amr_ros_wheel_rpm_can.py'
 SCRIPTS = {
     'imu_rpy': ROOT / 'amr_imu/imu_rpy_node.py',
     'imu_ws': ROOT / 'amr_imu/amr_imu_ws.py',
+    'ros_probe': ROOT / 'amr_tools/ros_topic_probe.py',
     'camera': ROOT / 'amr_websocket/amr_openvino_camera_depth.py',
     'calibration': ROOT / 'amr_websocket/amr_calibration_manager.py',
     'can': CAN_SCRIPT,
@@ -135,7 +136,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not args.skip_calibration:
         required.append('calibration')
     if not args.skip_imu:
-        required += ['imu_rpy', 'imu_ws']
+        required += ['imu_rpy', 'imu_ws', 'ros_probe']
     if not args.skip_camera:
         required.append('camera')
     if args.with_viewers:
@@ -240,27 +241,59 @@ class Supervisor:
 
     def wait_topic(self, label: str, topic: str, msg_type: str,
                    timeout: float, best_effort=False):
-        argv = ['ros2', 'topic', 'echo', topic, msg_type, '--once']
+        """Verify an actual ROS message with rclpy, not ros2 CLI/daemon.
+
+        This read-only helper avoids a ros2 topic echo process becoming an
+        additional failure source. A crashing probe is still a real startup
+        error, and must not be mistaken for an IMU device failure.
+        """
+        py = shutil.which('python3', path=self.env.get('PATH')) or sys.executable
+        argv = [py, str(SCRIPTS['ros_probe']), topic, msg_type,
+                '--timeout', str(timeout)]
         if best_effort:
-            argv += ['--qos-reliability', 'best_effort']
+            argv.append('--best-effort')
         try:
-            probe = subprocess.Popen(argv, env=self.env, cwd=ROOT,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     start_new_session=True)
+            probe = subprocess.Popen(
+                argv, env=self.env, cwd=ROOT,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         except OSError as exc:
-            raise LaunchError(f'{label} ROS probe could not start: {exc}') from exc
-        deadline = time.monotonic() + timeout
+            raise LaunchError(f'{label}: cannot start ROS message probe: {exc}') from exc
+
+        deadline = time.monotonic() + timeout + 2.0
         try:
             while time.monotonic() < deadline:
                 self.check()
                 status = probe.poll()
-                if status == 0:
-                    print(f'[READY] {label}: {topic} message received', flush=True)
-                    return
                 if status is not None:
-                    details = probe.stdout.read().decode(errors='replace')[-1000:]
-                    raise LaunchError(f'{label} ROS probe failed (code={status}): {details}')
-                time.sleep(0.3)
+                    output = (probe.stdout.read().decode(errors='replace')[-1600:]
+                              if probe.stdout else '')
+                    if status == 0:
+                        print(f'[READY] {label}: {topic} message received', flush=True)
+                        return
+                    if status == -signal.SIGBUS:
+                        raise LaunchError(
+                            f'{label} ROS message probe crashed with SIGBUS (-7), '
+                            'rather than reporting a sensor error. Check DDS/IPC '
+                            'and available /dev/shm space (df -h /dev/shm), '
+                            'and inspect kernel logs (sudo dmesg -T | tail). '
+                            f'Probe output: {output}'
+                        )
+                    if status < 0:
+                        try:
+                            name = signal.Signals(-status).name
+                        except ValueError:
+                            name = f'signal {-status}'
+                        raise LaunchError(
+                            f'{label} ROS message probe terminated by {name} '
+                            f'(code={status}): {output}'
+                        )
+                    raise LaunchError(
+                        f'{label}: did not receive {topic} (probe code={status}): '
+                        + output
+                    )
+                time.sleep(0.2)
             raise LaunchError(f'{label}: no {topic} message within {timeout:g}s')
         finally:
             if probe.poll() is None:
