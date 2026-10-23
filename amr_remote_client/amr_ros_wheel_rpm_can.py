@@ -523,6 +523,8 @@ def main():
     node = WheelRpmNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         with state.lock:
             state.shutdown = True
@@ -533,7 +535,7 @@ def main():
         if worker.is_alive():
             print('[CRITICAL] CAN worker not stopped; use independent E-stop', flush=True)
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
