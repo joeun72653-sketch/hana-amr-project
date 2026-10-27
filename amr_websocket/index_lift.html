@@ -67,9 +67,7 @@
 <div class="status-row"><span>리프트 연결</span><span id="liftConnection" class="status warn">연결 대기</span></div>
 <div class="status-row"><span>운전 상태</span><span id="liftState" class="status warn">미확인</span></div>
 <div class="imu-grid"><div class="imu-cell"><span>Lift 1</span><strong id="liftPos1">—</strong></div><div class="imu-cell"><span>Lift 2</span><strong id="liftPos2">—</strong></div><div class="imu-cell"><span>오류</span><strong id="liftError">—</strong></div></div>
-<label for="liftToken" class="info">리프트 서버 터미널의 접속 토큰</label>
-<input id="liftToken" type="password" autocomplete="off" placeholder="토큰 입력" style="width:100%;padding:10px;margin:6px 0">
-<button id="liftConnect" type="button">리프트 연결 / 인증</button>
+<p class="info">리프트 연결은 허용된 관제 단말에서 자동으로 진행됩니다.</p>
 <div class="arm-row" style="margin-top:12px"><button id="liftUp" type="button" disabled>▲ TOP 상승</button><button id="liftDown" type="button" disabled>▼ BOTTOM 하강</button></div>
 <button id="liftStop" type="button" style="background:#fee2e2;width:100%;margin-top:8px" disabled>■ 리프트 STOP</button>
 <p id="liftMessage" class="info" aria-live="polite">별도 Ubuntu 리프트 서버가 필요합니다.</p>
@@ -319,7 +317,7 @@ function liftSend(command){
 function liftUpdate(){
   const active=liftWs&&liftWs.readyState===WebSocket.OPEN&&liftAuthed&&Date.now()-liftFresh<800;
   // Server enforces the interlock independently; browser checks are only additional UI hints.
-  const driveStopped=!armed&&!current&&!calibrationActive;
+  const driveStopped=!current&&!calibrationActive;
   $('liftUp').disabled=!(active&&driveStopped&&!liftMoving);
   $('liftDown').disabled=!(active&&driveStopped&&!liftMoving);
   $('liftStop').disabled=!active;
@@ -327,22 +325,18 @@ function liftUpdate(){
 function liftConnect(){
   if(liftWs)try{liftWs.close()}catch{}
   liftAuthed=false;liftFresh=0;liftUpdate();
-  const token=$('liftToken').value.trim();
-  if(!token){$('liftMessage').textContent='리프트 서버 토큰을 입력하세요.';return;}
   let socket=new WebSocket(LIFT_WS_URL);liftWs=socket;
-  socket.onopen=()=>{if(liftWs===socket)socket.send(JSON.stringify({kind:'auth',token}));};
+  socket.onopen=()=>{$('liftConnection').textContent='연결 확인 중';};
   socket.onmessage=e=>{
     if(liftWs!==socket)return;
     let m;try{m=JSON.parse(e.data)}catch{return;}
-    if(m.kind==='auth'){liftAuthed=m.ok===true;$('liftConnection').textContent=liftAuthed?'연결됨':'인증 실패';$('liftConnection').className='status '+(liftAuthed?'ok':'error');}
-    if(m.kind==='lift_status')liftShowState(m);
+    if(m.kind==='lift_status'){liftAuthed=true;$('liftConnection').textContent='연결됨';$('liftConnection').className='status ok';liftShowState(m);}
     if(m.kind==='lift_result'||m.kind==='lift_error')$('liftMessage').textContent=m.message||m.reason||'';
     liftUpdate();
   };
   socket.onclose=()=>{if(liftWs!==socket)return;liftAuthed=false;liftMoving=false;liftFresh=0;$('liftConnection').textContent='연결 끊김';$('liftConnection').className='status error';liftUpdate();};
   socket.onerror=()=>{$('liftMessage').textContent='리프트 서버 연결 오류: '+LIFT_WS_URL;};
 }
-$('liftConnect').addEventListener('click',liftConnect);
 $('liftUp').addEventListener('click',()=>{if(confirm('리프트를 TOP까지 상승시킵니다. 주변과 안전장치를 확인했나요?'))liftSend('up');});
 $('liftDown').addEventListener('click',()=>{if(confirm('리프트를 BOTTOM까지 하강시킵니다. 주변과 안전장치를 확인했나요?'))liftSend('down');});
 $('liftStop').addEventListener('click',()=>liftSend('stop'));
@@ -350,7 +344,7 @@ setInterval(()=>{if(liftAuthed&&liftWs?.readyState===WebSocket.OPEN)liftWs.send(
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&liftMoving)liftSend('stop');});
 window.addEventListener('pagehide',()=>{if(liftMoving)liftSend('stop');});
 
-connect();update();
+connect();update();liftConnect();
 </script>
 </body>
 </html>
