@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMR 통합 원격 관제 시스템</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:16px;background:#f1f5f9;color:#172033;font-family:Arial,'Malgun Gothic',sans-serif}header{max-width:1400px;margin:0 auto 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}h1{font-size:24px;margin:0}h2{font-size:18px;margin:0 0 14px}.subtitle,.info{color:#64748b;font-size:13px}.dashboard{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,1fr);gap:16px;align-items:start}.panel{background:white;border:1px solid #dce3eb;border-radius:14px;padding:18px;margin-bottom:14px;min-width:0}.camera-panel{position:static}.camera-frame{background:#111827;border-radius:10px;overflow:hidden}#camera{display:block;width:100%;aspect-ratio:4/3;object-fit:contain}#cameraStatus{color:white;text-align:center;padding:10px;font-size:13px}.status-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.status{padding:8px 12px;border-radius:8px;background:#e2e8f0;font-weight:bold;font-size:13px}.ok{background:#dcfce7;color:#166534}.error{background:#fee2e2;color:#991b1b}.warn{background:#fef3c7;color:#92400e}button{border:1px solid #cbd5e1;border-radius:10px;padding:13px 8px;font-size:15px;font-weight:bold;background:#f8fafc;cursor:pointer;touch-action:none;user-select:none}button:disabled{opacity:.4;cursor:not-allowed}button.active{background:#bfdbfe;border-color:#2563eb}.arm-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}#arm{background:#dcfce7}#disarm{background:#fee2e2}#rpm{width:100%;margin:14px 0}#rpmNumber{width:100%;padding:10px;font-size:16px}#rpmValue{font-size:25px;color:#2563eb}.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.keys button{min-height:70px;font-size:24px}.sub{display:block;font-size:11px;font-weight:normal;margin-top:5px}#stop{background:#dc2626;color:white}#message{background:#f8fafc;padding:12px;border-radius:8px;overflow-wrap:anywhere;font-size:13px}.warning{color:#b91c1c;font-size:12px;line-height:1.6}@media(max-width:850px){.dashboard{grid-template-columns:1fr}.camera-panel{position:static}h1{font-size:20px}}
+.imu-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.imu-cell{background:#f1f5f9;border-radius:10px;padding:16px 8px;text-align:center}.imu-cell span{display:block;color:#64748b;font-size:13px;margin-bottom:8px}.imu-cell strong{font-size:clamp(18px,2.2vw,28px);font-variant-numeric:tabular-nums}
+
+/* Compact motor status between camera and IMU; controls on the right */
+.left-column,.right-column{min-width:0;display:flex;flex-direction:column;gap:14px}
+.left-column .panel,.right-column .panel{margin-bottom:0}
+.motor-compact{padding:13px 16px}
+.motor-compact h2{font-size:16px;margin-bottom:9px}
+.motor-compact .status-row{margin-bottom:6px;font-size:13px}
+.motor-compact .status{padding:5px 9px;font-size:12px}
+.motor-compact .arm-row{gap:8px;margin-top:8px}
+.motor-compact .motor-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center}
+.motor-compact .motor-summary .status-row{margin:0;gap:6px;white-space:nowrap}
+.motor-compact .motor-summary .status{padding:5px 7px}
+@media(max-width:480px){.motor-compact .motor-summary{grid-template-columns:1fr}}
+.motor-compact .arm-row button{padding:9px 8px;font-size:13px}
+@media(max-width:850px){.left-column,.right-column{gap:12px}}
+
+/* Calibration control panel. Hardware/launch safeguards remain independent. */
+.cal-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.cal-item{background:#f1f5f9;border-radius:10px;padding:12px}
+.cal-item small{display:block;color:#64748b;margin-bottom:6px}
+.cal-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
+.cal-note{font-size:12px;line-height:1.6;color:#92400e;background:#fffbeb;padding:10px;border-radius:8px}
+@media(max-width:480px){.cal-actions{grid-template-columns:1fr}}
+.cal-log-pane{margin-top:14px;border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}
+.cal-log-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+.cal-log-tools button{padding:8px 10px;font-size:12px}
+.cal-log-pane pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;max-height:320px;min-height:95px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.45;margin:0}
+.cal-log-pane a{color:#1d4ed8;font-weight:600}
+
+</style>
+</head>
+<body>
+<header><div><h1>AMR 통합 원격 관제 시스템</h1><p class="subtitle">CANopen Motor Control + OpenVINO AI Camera + MicroStrain IMU</p></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px"><span id="connection" class="status">모터 WebSocket 연결 대기</span><small id="motorWsAddress" class="info">연결 주소 확인 중</small><button id="motorReconnect" type="button" style="padding:5px 10px;font-size:12px">모터 WS 재연결</button></div></header>
+<div class="dashboard">
+<div class="left-column">
+<section class="panel camera-panel"><h2>AMR 실시간 AI 카메라</h2><div class="camera-frame"><img id="camera" alt="OpenVINO 객체인식 영상"><div id="cameraStatus">카메라 연결 대기</div></div><p class="info">Orbbec Gemini 335L / OpenVINO 객체 인식</p><p class="warning">영상 지연·끊김 시 조종을 중지하세요. 웹 STOP은 하드웨어 비상정지를 대체하지 않습니다.</p></section>
+<section class="panel motor-compact"><h2>모터 제어 상태</h2><div class="motor-summary"><div class="status-row"><span>운전 상태</span><span id="state" class="status error">DISARMED</span></div><div class="status-row"><span>모터 준비</span><span id="motorReady" class="status warn">NOT READY</span></div></div><div class="arm-row"><button id="arm" disabled>ARM</button><button id="disarm" disabled>DISARM</button></div></section>
+<section class="panel imu-panel"><h2>IMU 실시간 자세 · MicroStrain 3DM-CV7-AR</h2>
+<div class="status-row"><span>IMU 데이터 상태</span><span class="status warn" id="imuStatus">연결 대기</span></div>
+<div class="imu-grid"><div class="imu-cell"><span>Roll</span><strong id="imuRoll">—</strong></div><div class="imu-cell"><span>Pitch</span><strong id="imuPitch">—</strong></div><div class="imu-cell"><span>Yaw</span><strong id="imuYaw">—</strong></div></div>
+<p class="info">센서 좌표계 기준 각도(°). AMR 본체 기준 보정 전이며 Yaw는 진북 기준 방위각이 아닐 수 있습니다.</p></section>
+</div>
+<div class="right-column">
+<section class="panel"><h2>모터 속도 설정</h2><div class="status-row"><span>요청 RPM</span><strong id="rpmValue">30</strong></div><input id="rpm" type="range" min="30" max="500" step="10" value="30"><input id="rpmNumber" type="number" min="30" max="500" step="10" value="30"><p class="info">설정 범위: 30~500 RPM · 실제 구동 허용 여부는 로봇 측 안전 조건에 따릅니다.</p></section>
+<section class="panel"><h2>AMR 8방향 조종</h2><div class="keys"><button data-drive="forward_left" disabled>↖<span class="sub">W+A</span></button><button data-drive="forward" disabled>↑<span class="sub">W 전진</span></button><button data-drive="forward_right" disabled>↗<span class="sub">W+D</span></button><button data-drive="left" disabled>↶<span class="sub">A 좌회전</span></button><button id="stop">■<span class="sub">STOP / Q</span></button><button data-drive="right" disabled>↷<span class="sub">D 우회전</span></button><button data-drive="reverse_left" disabled>↙<span class="sub">S+A</span></button><button data-drive="reverse" disabled>↓<span class="sub">S 후진</span></button><button data-drive="reverse_right" disabled>↘<span class="sub">S+D</span></button></div><p class="info">버튼을 누르는 동안 주행 요청 전송 · 키보드 W/A/S/D, Q/Space</p></section>
+<section class="panel" id="calibrationPanel"><h2>LiDAR · Encoder · IMU 통합 보정</h2>
+<div class="cal-grid"><div class="cal-item"><small>보정 관리 서버</small><strong id="calServer">연결 확인 전</strong></div><div class="cal-item"><small>보정 준비 상태</small><strong id="calReady">미검증</strong></div><div class="cal-item"><small>실행 상태</small><strong id="calState">대기</strong></div><div class="cal-item"><small>의존 패키지</small><strong id="calDependency">custom_amr_description 미설치</strong></div></div>
+<div class="cal-actions"><button id="calCheck">보정 서버 연결 확인</button><button id="calStart" type="button">자동 보정 시작 요청</button><button id="calStop" type="button">보정 중지 요청</button></div>
+<p class="cal-note">시작 버튼은 ROS2 보정 Launch를 실행합니다(start:=true, auto_reposition:=true). 별도의 웹 안전검증은 하지 않으며 기존 하드웨어 및 Launch의 안전장치는 그대로 유지합니다. 웹 중지 버튼은 물리 E-Stop을 대체하지 않습니다.</p>
+<div id="calMessage" class="info" role="status" aria-live="polite">보정 상태 조회 대기</div>
+<div class="cal-log-pane">
+  <div class="cal-log-tools"><strong>보정 실행 로그 (TXT)</strong><span id="calLogName" class="info">저장 기록 없음</span></div>
+  <div class="cal-log-tools"><button type="button" id="calLogRefresh">로그 새로고침</button><a id="calLogDownload" href="#" aria-disabled="true" style="pointer-events:none;opacity:.5">최신 TXT 다운로드</a></div>
+  <pre id="calLogText" aria-label="ROS2 Launch 실행 로그" role="log">보정 실행 시 출력이 이곳에 표시됩니다.</pre>
+  <p class="info">보정 중에는 3초마다 최신 로그를 표시합니다. 전체 출력은 AMR PC의 ~/amr_calibration_logs/ 에 날짜별 TXT 파일로 보관됩니다.</p>
+</div>
+</section>
+<section class="panel" id="liftPanel"><h2>ORGO 리프트 제어</h2>
+<div class="status-row"><span>리프트 연결</span><span id="liftConnection" class="status warn">연결 대기</span></div>
+<div class="status-row"><span>운전 상태</span><span id="liftState" class="status warn">미확인</span></div>
+<div class="imu-grid"><div class="imu-cell"><span>Lift 1</span><strong id="liftPos1">—</strong></div><div class="imu-cell"><span>Lift 2</span><strong id="liftPos2">—</strong></div><div class="imu-cell"><span>오류</span><strong id="liftError">—</strong></div></div>
+<label for="liftToken" class="info">리프트 서버 터미널의 접속 토큰</label>
+<input id="liftToken" type="password" autocomplete="off" placeholder="토큰 입력" style="width:100%;padding:10px;margin:6px 0">
+<button id="liftConnect" type="button">리프트 연결 / 인증</button>
+<div class="arm-row" style="margin-top:12px"><button id="liftUp" type="button" disabled>▲ TOP 상승</button><button id="liftDown" type="button" disabled>▼ BOTTOM 하강</button></div>
+<button id="liftStop" type="button" style="background:#fee2e2;width:100%;margin-top:8px" disabled>■ 리프트 STOP</button>
+<p id="liftMessage" class="info" aria-live="polite">별도 Ubuntu 리프트 서버가 필요합니다.</p>
+<p class="warning">주행과 리프트 동시 동작 차단. 브라우저 종료 또는 연결 끊김 시 정지 요청. 실제 비상정지는 하드웨어 버튼을 사용하세요.</p>
+</section>
+<section class="panel"><h2>시스템 메시지</h2><div id="message">시스템 연결 대기</div></section>
+</div>
+</div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+// AMR PC hosts this HTML, AI camera, IMU WebSocket and calibration HTTP API.
+// The motor-control WebSocket is hosted by the Windows operator PC.
+const CAMERA_HOST=location.hostname, CAMERA_PORT=8090, WS_PORT=8765;
+const MOTOR_WS_HOST='192.168.0.31'; // Windows server IP: edit only if it changed
+const MOTOR_WS_URL=`${location.protocol==='https:'?'wss':'ws'}://${MOTOR_WS_HOST}:${WS_PORT}`;
+const camera=$('camera');
+camera.onload=()=>{$('cameraStatus').textContent='카메라 영상 연결됨';};
+camera.onerror=()=>{$('cameraStatus').textContent='카메라 연결 실패 - 8090 포트 확인';};
+camera.src=`http://${CAMERA_HOST}:${CAMERA_PORT}/stream.mjpg?t=${Date.now()}`;
+const buttons=[...document.querySelectorAll('[data-drive]')];
+const heldKeys=new Set();
+let ws=null,armed=false,registered=false,motorReady=false,current=null,intervalId=null,pointerCommand=null,pointerId=null;
+let calibrationActive=false;
+function send(data){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(data));}
+function rpm(){return Number($('rpmNumber').value);}
+function setRpm(value){let n=Math.round(Number(value)/10)*10;n=Math.max(30,Math.min(500,n||30));$('rpm').value=n;$('rpmNumber').value=n;$('rpmValue').textContent=n;}
+$('rpm').addEventListener('input',e=>setRpm(e.target.value));
+$('rpmNumber').addEventListener('change',e=>setRpm(e.target.value));
+function update(){const connected=!!ws&&ws.readyState===WebSocket.OPEN;buttons.forEach(b=>b.disabled=calibrationActive||!(connected&&registered&&armed&&motorReady));$('arm').disabled=calibrationActive||!(connected&&registered);$('disarm').disabled=!(connected&&registered);$('state').textContent=armed?'ARMED':'DISARMED';$('state').className='status '+(armed?'ok':'error');$('motorReady').textContent=motorReady?'READY':'NOT READY';$('motorReady').className='status '+(motorReady?'ok':'warn');}
+function keyCommand(){const w=heldKeys.has('w'),s=heldKeys.has('s'),a=heldKeys.has('a'),d=heldKeys.has('d');if((w&&s)||(a&&d))return null;if(w)return a?'forward_left':d?'forward_right':'forward';if(s)return a?'reverse_left':d?'reverse_right':'reverse';return a?'left':d?'right':null;}
+function stopTransmission(){if(intervalId!==null){clearInterval(intervalId);intervalId=null;}current=null;buttons.forEach(b=>b.classList.remove('active'));}
+function setMotion(cmd){if(calibrationActive||!armed||!registered||!motorReady||!ws||ws.readyState!==WebSocket.OPEN)cmd=null;if(cmd===current)return;if(current!==null){stopTransmission();send({kind:'command',command:'stop'});return;}if(cmd===null)return;current=cmd;buttons.forEach(b=>b.classList.toggle('active',b.dataset.drive===cmd));send({kind:'command',command:cmd,rpm:rpm()});intervalId=setInterval(()=>{if(current&&armed&&registered&&motorReady&&document.visibilityState==='visible')send({kind:'command',command:current,rpm:rpm()});},80);}
+function reconcile(){setMotion(pointerCommand||keyCommand());}
+function releaseAll(){pointerCommand=null;pointerId=null;heldKeys.clear();if(current!==null){stopTransmission();send({kind:'command',command:'stop'});}else{stopTransmission();}}
+// Reconnect only with all motion input released. NEVER auto-arm after reconnect.
+let motorRetryTimer=null;
+function setMotorConnection(label,level){
+  $('connection').textContent=label;
+  $('connection').className='status '+level;
+}
+function connect(){
+  if(ws&&(ws.readyState===WebSocket.CONNECTING||ws.readyState===WebSocket.OPEN))return;
+  if(motorRetryTimer!==null){clearTimeout(motorRetryTimer);motorRetryTimer=null;}
+  registered=false;armed=false;motorReady=false;
+  releaseAll();update();
+  setMotorConnection('모터 WS 연결 중','warn');
+  let socket;
+  try{socket=new WebSocket(MOTOR_WS_URL)}catch(err){
+    setMotorConnection('모터 WS 주소 오류','error');
+    $('message').textContent='모터 WS 주소 확인: '+err.message;
+    motorRetryTimer=setTimeout(connect,3000);return;
+  }
+  ws=socket;
+  socket.onopen=()=>{
+    if(ws!==socket)return;
+    send({role:'operator'});
+    setMotorConnection('모터 WS 연결됨 · 등록 대기','warn');
+  };
+  socket.onmessage=e=>{
+    if(ws!==socket)return;
+    let m;try{m=JSON.parse(e.data)}catch{return;}
+    if(m.status==='connected'&&m.role==='operator'){
+      registered=true;
+      setMotorConnection('모터 WS 등록 완료','ok');
+      update();return;
+    }
+    if(m.kind==='state'){
+      armed=m.armed===true;motorReady=m.motor_ready===true;
+      if(!armed||!motorReady)releaseAll();
+      update();
+      $('message').textContent=`${m.reason||'상태 수신'} | motor_ready=${motorReady}`;
+    }else if(m.status==='error'||m.kind==='error'){
+      $('message').textContent=m.message||m.reason||'모터 WS 서버 오류';
+    }
+  };
+  socket.onclose=e=>{
+    if(ws!==socket)return;
+    releaseAll();
+    ws=null;armed=false;registered=false;motorReady=false;update();
+    setMotorConnection('모터 WS 끊김 · 재연결 대기','error');
+    $('message').textContent=`모터 WS 연결 종료(code=${e.code}). ${MOTOR_WS_URL} 서버 실행/방화벽 확인`;
+    if(motorRetryTimer!==null)clearTimeout(motorRetryTimer);
+    motorRetryTimer=setTimeout(()=>{motorRetryTimer=null;connect();},3000);
+  };
+  socket.onerror=()=>{
+    if(ws!==socket)return;
+    setMotorConnection('모터 WS 통신 오류','error');
+    $('message').textContent=`모터 WS 접속 실패: ${MOTOR_WS_URL} (Windows 서버/8765 포트 확인)`;
+  };
+}
+$('motorWsAddress').textContent='모터: '+MOTOR_WS_URL+' · IMU: '+`${location.hostname}:8766`;
+$('motorReconnect').addEventListener('click',()=>{
+  // Do not close an active connection or interrupt an in-progress handshake.
+  if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING)){
+    $('message').textContent='모터 WS가 이미 연결 또는 연결 중입니다.';return;
+  }
+  connect();
+});
+$('arm').addEventListener('click',()=>send({kind:'arm'}));
+$('disarm').addEventListener('click',()=>{releaseAll();send({kind:'disarm'});});
+$('stop').addEventListener('click',()=>{releaseAll();send({kind:'command',command:'stop'});});
+buttons.forEach(b=>{b.addEventListener('pointerdown',e=>{if(b.disabled)return;e.preventDefault();pointerId=e.pointerId;pointerCommand=b.dataset.drive;try{b.setPointerCapture(e.pointerId);}catch{}reconcile();});const release=e=>{if(pointerId===e.pointerId){pointerId=null;pointerCommand=null;releaseAll();}};b.addEventListener('pointerup',release);b.addEventListener('pointercancel',release);b.addEventListener('lostpointercapture',()=>{if(pointerCommand===b.dataset.drive)releaseAll();});});
+window.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;const k=e.key.toLowerCase();if(k==='q'||k===' '){e.preventDefault();releaseAll();send({kind:'command',command:'stop'});return;}if(['w','a','s','d'].includes(k)){e.preventDefault();heldKeys.add(k);reconcile();}});
+window.addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(['w','a','s','d'].includes(k)){heldKeys.delete(k);reconcile();if(!heldKeys.size&&!pointerCommand)releaseAll();}});
+window.addEventListener('blur',releaseAll);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseAll();});
+window.addEventListener('pagehide',releaseAll);
+
+// IMU is independent of the motor-control WebSocket. Read-only telemetry only.
+const IMU_URL=`ws://${location.hostname}:8766`;
+let imuWs=null,imuLast=0;
+function imuClear(text){
+  $('imuRoll').textContent='—';$('imuPitch').textContent='—';$('imuYaw').textContent='—';
+  $('imuStatus').textContent=text;$('imuStatus').className='status warn';
+}
+function imuConnect(){
+  imuClear('연결 중');
+  imuWs=new WebSocket(IMU_URL);
+  imuWs.onmessage=e=>{
+    let m;try{m=JSON.parse(e.data)}catch{return}
+    if(m.kind!=='imu')return;
+    if(m.status!=='ok'){imuClear('데이터 수신 대기');return;}
+    if(!['roll','pitch','yaw'].every(k=>typeof m[k]==='number'&&Number.isFinite(m[k])))return;
+    imuLast=Date.now();
+    $('imuRoll').textContent=m.roll.toFixed(2)+'°';
+    $('imuPitch').textContent=m.pitch.toFixed(2)+'°';
+    $('imuYaw').textContent=m.yaw.toFixed(2)+'°';
+    $('imuStatus').textContent='실시간 수신';$('imuStatus').className='status ok';
+  };
+  imuWs.onclose=()=>{imuClear('연결 끊김');setTimeout(imuConnect,2000)};
+  imuWs.onerror=()=>{imuClear('통신 오류')};
+}
+setInterval(()=>{if(imuLast&&Date.now()-imuLast>1500)imuClear('데이터 지연')},500);
+imuConnect();
+
+// Calibration uses HTTP port 8877. No manual control-token entry.
+// The hardware/ROS launch safety functions must remain independently active.
+const CAL_BASE=`http://${location.hostname}:8877`;
+let calRunning=false;
+let calBusy=false;
+let logFileSeen='';
+async function calFetch(path, options={}) {
+  const response=await fetch(CAL_BASE+path,{cache:'no-store',signal:AbortSignal.timeout(6000),...options});
+  let data;
+  try{data=await response.json()}catch{throw new Error('관리 서버 응답 형식 오류 (HTTP '+response.status+')')}
+  if(!response.ok)throw new Error((data.message||data.reason||'요청 처리 실패')+' (HTTP '+response.status+')');
+  return data;
+}
+async function refreshCalibrationStatus(silent=false){
+  try {
+    const data=await calFetch('/status');
+    $('calServer').textContent='응답 확인';
+    $('calReady').textContent=data.ready===true?'ROS2 환경 준비':'준비되지 않음';
+    $('calState').textContent=String(data.state||'대기') + (data.exit_code!==null&&data.exit_code!==undefined?` · 종료 ${data.exit_code}`:'');
+    $('calDependency').textContent=data.dependency_installed===true?'설치 확인':'미설치 또는 미확인';
+    const wasRunning=calRunning;
+    calRunning=data.running===true;
+    calibrationActive=calRunning;
+    if(calRunning&&!wasRunning)releaseAll();
+    if(wasRunning&&!calRunning)refreshCalibrationLog();
+    update();
+    $('calStart').disabled=calRunning||calBusy;
+    $('calStop').disabled=!calRunning||calBusy;
+    if(!silent)$('calMessage').textContent=String(data.message||'상태 조회 완료');
+    if(data.log_filename) setLogDownload(data.log_filename);
+  }catch(e){
+    $('calServer').textContent='미연결';
+    $('calStart').disabled=true;
+    $('calStop').disabled=true;
+    if(!silent)$('calMessage').textContent='보정 관리 서버 통신 오류: '+e.message;
+  }
+}
+function setLogDownload(name){
+  if(!name)return;
+  $('calLogName').textContent=name;
+  const a=$('calLogDownload');
+  a.href=CAL_BASE+'/logs/latest';
+  a.style.pointerEvents='auto';
+  a.style.opacity='1';
+  a.removeAttribute('aria-disabled');
+  logFileSeen=name;
+}
+async function refreshCalibrationLog(){
+  try{
+    const data=await calFetch('/log-tail');
+    if(data.filename)setLogDownload(data.filename);
+    const panel=$('calLogText');
+    const atBottom=panel.scrollTop+panel.clientHeight>=panel.scrollHeight-45;
+    const text=String(data.text||'아직 출력이 없습니다.');
+    if(panel.textContent!==text){
+      panel.textContent=text;
+      if(atBottom)panel.scrollTop=panel.scrollHeight;
+    }
+  }catch(e){
+    $('calLogText').textContent='로그 조회 오류: '+e.message;
+  }
+}
+$('calCheck').addEventListener('click',()=>{refreshCalibrationStatus();refreshCalibrationLog();});
+$('calLogRefresh').addEventListener('click',refreshCalibrationLog);
+async function calPost(path){
+  if(calBusy)return;
+  if(path==='/start'&&!confirm('실제 AMR 자동 이동 보정을 시작합니다. 작업 구역 및 독립 안전장치를 확인했나요?'))return;
+  calBusy=true;
+  $('calStart').disabled=true;
+  $('calStop').disabled=true;
+  $('calMessage').textContent='보정 관리 서버에 요청 전송 중...';
+  try{
+    const data=await calFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(14000)});
+    $('calMessage').textContent=String(data.message||'요청 접수');
+    if(data.log_filename)setLogDownload(data.log_filename);
+    await refreshCalibrationLog();
+  }catch(e){$('calMessage').textContent='보정 요청 오류: '+e.message;}
+  finally{calBusy=false;await refreshCalibrationStatus(true);}
+}
+$('calStart').addEventListener('click',()=>calPost('/start'));
+$('calStop').addEventListener('click',()=>calPost('/stop'));
+// Initial load and lightweight polling while the calibration is running.
+$('calStart').disabled=true;
+$('calStop').disabled=true;
+refreshCalibrationStatus();
+refreshCalibrationLog();
+setInterval(async()=>{
+  if(document.hidden||calBusy)return;
+  await refreshCalibrationStatus(true);
+  if(calRunning)await refreshCalibrationLog();
+},3000);
+
+
+// ORGO lift has an independent WebSocket server on the AMR Ubuntu PC.
+const LIFT_WS_URL=`${location.protocol==='https:'?'wss':'ws'}://${location.hostname}:8767`;
+let liftWs=null, liftAuthed=false, liftMoving=false, liftBeat=null, liftFresh=0;
+function liftShowState(m){
+  liftFresh=Date.now();
+  $('liftPos1').textContent=Number.isFinite(m.pos1)?m.pos1+' P':'—';
+  $('liftPos2').textContent=Number.isFinite(m.pos2)?m.pos2+' P':'—';
+  $('liftError').textContent=Number.isInteger(m.error)?'0x'+m.error.toString(16):'—';
+  $('liftState').textContent=m.state||'UNKNOWN';
+  $('liftState').className='status '+(m.state==='FAULT'?'error':m.moving?'warn':'ok');
+  liftMoving=!!m.moving;
+  liftUpdate();
+}
+function liftSend(command){
+  if(liftWs&&liftWs.readyState===WebSocket.OPEN&&liftAuthed)
+    liftWs.send(JSON.stringify({kind:'lift_command',command}));
+}
+function liftUpdate(){
+  const active=liftWs&&liftWs.readyState===WebSocket.OPEN&&liftAuthed&&Date.now()-liftFresh<800;
+  // Server enforces the interlock independently; browser checks are only additional UI hints.
+  const driveStopped=!armed&&!current&&!calibrationActive;
+  $('liftUp').disabled=!(active&&driveStopped&&!liftMoving);
+  $('liftDown').disabled=!(active&&driveStopped&&!liftMoving);
+  $('liftStop').disabled=!active;
+}
+function liftConnect(){
+  if(liftWs)try{liftWs.close()}catch{}
+  liftAuthed=false;liftFresh=0;liftUpdate();
+  const token=$('liftToken').value.trim();
+  if(!token){$('liftMessage').textContent='리프트 서버 토큰을 입력하세요.';return;}
+  let socket=new WebSocket(LIFT_WS_URL);liftWs=socket;
+  socket.onopen=()=>{if(liftWs===socket)socket.send(JSON.stringify({kind:'auth',token}));};
+  socket.onmessage=e=>{
+    if(liftWs!==socket)return;
+    let m;try{m=JSON.parse(e.data)}catch{return;}
+    if(m.kind==='auth'){liftAuthed=m.ok===true;$('liftConnection').textContent=liftAuthed?'연결됨':'인증 실패';$('liftConnection').className='status '+(liftAuthed?'ok':'error');}
+    if(m.kind==='lift_status')liftShowState(m);
+    if(m.kind==='lift_result'||m.kind==='lift_error')$('liftMessage').textContent=m.message||m.reason||'';
+    liftUpdate();
+  };
+  socket.onclose=()=>{if(liftWs!==socket)return;liftAuthed=false;liftMoving=false;liftFresh=0;$('liftConnection').textContent='연결 끊김';$('liftConnection').className='status error';liftUpdate();};
+  socket.onerror=()=>{$('liftMessage').textContent='리프트 서버 연결 오류: '+LIFT_WS_URL;};
+}
+$('liftConnect').addEventListener('click',liftConnect);
+$('liftUp').addEventListener('click',()=>{if(confirm('리프트를 TOP까지 상승시킵니다. 주변과 안전장치를 확인했나요?'))liftSend('up');});
+$('liftDown').addEventListener('click',()=>{if(confirm('리프트를 BOTTOM까지 하강시킵니다. 주변과 안전장치를 확인했나요?'))liftSend('down');});
+$('liftStop').addEventListener('click',()=>liftSend('stop'));
+setInterval(()=>{if(liftAuthed&&liftWs?.readyState===WebSocket.OPEN)liftWs.send(JSON.stringify({kind:'heartbeat'}));liftUpdate();},150);
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&liftMoving)liftSend('stop');});
+window.addEventListener('pagehide',()=>{if(liftMoving)liftSend('stop');});
+
+connect();update();
+</script>
+</body>
+</html>
