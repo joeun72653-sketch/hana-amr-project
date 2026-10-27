@@ -10,6 +10,7 @@ import json
 import math
 import threading
 import time
+from pathlib import Path
 
 import rclpy
 import websockets
@@ -17,6 +18,7 @@ from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Bool, Float64, String
 
+CAL_FLAG = Path.home() / '.amr_calibration_active'
 SERVER = 'ws://192.168.0.31:8765'
 MIN_REQUEST_RPM = 30.0
 MAX_REQUEST_RPM = 500.0
@@ -51,6 +53,7 @@ class AMRBridge(Node):
     def __init__(self, bench_motion=False):
         super().__init__('amr_ws_to_ros')
         self.bench_motion = bench_motion
+        self.calibration_hold = False
         self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
         self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
         self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
@@ -105,7 +108,7 @@ class AMRBridge(Node):
     def publish(self, left, right):
         # Keep RPM publication ordered against DISARM under the same lock.
         with self.lock:
-            if self.session is None or self.phase == 'DISARMED':
+            if CAL_FLAG.exists() or self.session is None or self.phase == 'DISARMED':
                 return
             self.left_pub.publish(Float64(data=float(left)))
             self.right_pub.publish(Float64(data=float(right)))
@@ -114,6 +117,9 @@ class AMRBridge(Node):
         self.publish(0, 0)
 
     def arm(self, token):
+        if CAL_FLAG.exists():
+            print('[CAL] ARM ignored during calibration', flush=True)
+            return
         with self.lock:
             self.session = token
             self.phase = 'ARM_READY'
@@ -179,6 +185,27 @@ class AMRBridge(Node):
         return True, 'already_stopped_confirmed'
 
     def control_tick(self):
+        # Calibration owns motor-command publishing while this flag exists.
+        if CAL_FLAG.exists():
+            with self.lock:
+                if not self.calibration_hold:
+                    self.calibration_hold = True
+                    self.session = None
+                    self.phase = 'DISARMED'
+                    self.requested = (0.0, 0.0)
+                    self.command_at = None
+                    print('[CAL] Calibration active: Web RPM publishing suspended',
+                          flush=True)
+                # Deauthorize the Web bridge; do not send wheel RPM zeros.
+                self.auth_pub.publish(Bool(data=False))
+            return
+
+        with self.lock:
+            if self.calibration_hold:
+                self.calibration_hold = False
+                print('[CAL] Calibration ended: Web bridge resumed; ARM required',
+                      flush=True)
+
         now = time.monotonic()
         with self.lock:
             session = self.session
@@ -227,7 +254,7 @@ async def run_bridge(bridge):
         last_ready_report = 0.0
         bridge.stop(disarm=True)
         try:
-            async with websockets.connect(SERVER, ping_interval=2, ping_timeout=2) as ws:
+            async with websockets.connect(SERVER, ping_interval=10, ping_timeout=10) as ws:
                 await send(ws, {'role': 'robot'})
                 hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
                 if hello.get('role') != 'robot' or hello.get('status') != 'connected':

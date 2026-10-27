@@ -1,10 +1,11 @@
 
+import argparse
 import time
 import serial
 
 from amr_keyboard_safe import UCan
 
-PORT = "/dev/ttyUSB0"
+PORT = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG04BIQZ-if00-port0"
 BAUD = 115200
 NODES = (1, 2)
 
@@ -88,25 +89,34 @@ def verify_zero(can):
         actual = can.read_sdo(
             node, 0x606C, signed=True
         )
+        mode = can.read_sdo(node, 0x6061)
 
         print(
             f"[Node {node}] "
-            f"Target={target}, Actual={actual}"
+            f"Target={target}, Actual={actual}, Mode={mode}"
         )
 
         if target != 0 or actual != 0:
             raise RuntimeError(
                 f"Node {node}: 속도가 0이 아님"
             )
+        if mode != 3:
+            raise RuntimeError(
+                f"Node {node}: Profile Velocity Mode 아님"
+            )
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Safely ensure both CANopen motors are enabled")
+    parser.add_argument("--port", default=PORT, help="uCAN serial port")
+    args = parser.parse_args()
+
     print("=" * 50)
     print("AMR CANopen Operation Enable")
     print("=" * 50)
 
     with serial.Serial(
-        PORT, BAUD, timeout=0.02
+        args.port, BAUD, timeout=0.02
     ) as ser:
 
         can = UCan(ser)
@@ -117,42 +127,46 @@ def main():
 
         print("\n[STEP 2] 현재 상태 확인")
 
+        statuses = {}
         for node in NODES:
             status = read_status(can, node)
+            state = status & 0x006F
+            statuses[node] = state
             print(
                 f"Node {node}: 0x{status:04X} "
                 f"({decode_state(status)})"
             )
 
-            if (status & 0x006F) not in (
-                0x0040, 0x0021, 0x0023, 0x0027
-            ):
+            if state not in (0x0040, 0x0021, 0x0023, 0x0027):
                 raise RuntimeError(
                     f"Node {node}: 예상하지 못한 상태"
                 )
 
-        answer = input(
-            "\n기체 고정 및 독립 비상정지 확인 후 "
-            "ENABLE 입력: "
-        ).strip()
-
-        if answer != "ENABLE":
-            print("[CANCEL] 활성화 취소")
+        if all(state == 0x0027 for state in statuses.values()):
+            print("[SUCCESS] 양쪽 모터 이미 Operation Enabled; 속도 0 확인")
             return
 
+        print("[INFO] 비활성 드라이브만 자동 Enable (정지/모드 확인 완료)")
+
         try:
-            for control, expected, name in STEPS:
+            stage_of = {
+                0x0040: 0, 0x0021: 1, 0x0023: 2, 0x0027: 3,
+            }
+            for stage, (control, expected, name) in enumerate(STEPS, start=1):
                 print(f"\n[STEP] {name}")
 
                 for node in NODES:
                     status = read_status(can, node)
+                    state = status & 0x006F
+                    current_stage = stage_of.get(state, -1)
 
-                    if (status & 0x006F) == expected:
-                        print(
-                            f"[SKIP] Node {node}: "
-                            "이미 해당 상태"
-                        )
+                    if current_stage >= stage:
+                        print(f"[SKIP] Node {node}: {decode_state(status)}")
                         continue
+                    if current_stage != stage - 1:
+                        raise RuntimeError(
+                            f"Node {node}: 예기치 않은 전이 상태 0x{status:04X}"
+                        )
 
                     print(
                         f"[TX] Node {node}: "

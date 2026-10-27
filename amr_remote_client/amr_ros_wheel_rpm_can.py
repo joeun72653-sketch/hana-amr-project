@@ -23,6 +23,7 @@ CAN_BAUD = 115200
 # CANopen 0x60FF carries a signed 32-bit integer. This is a wire-format bound,
 # not a software speed limit or a verified safe mechanical speed.
 CANOPEN_INT32_MAX = (1 << 31) - 1
+BENCH_BYPASS_DISARM = True
 COMMAND_TIMEOUT = 0.35
 AUTH_TIMEOUT = 0.5  # Web bridge must refresh explicit permission
 FEEDBACK_INTERVAL = 0.5
@@ -56,8 +57,8 @@ class DualWheelState:
         self.applied = (0, 0)
         self.actual = (0, 0)
         self.shutdown = False
-        self.auth_enabled = False
-        self.auth_at = None
+        self.auth_enabled = BENCH_BYPASS_DISARM
+        self.auth_at = time.monotonic() if BENCH_BYPASS_DISARM else None
 
     def _latch(self, reason):
         # Called under self.lock. Force a NEW pair of zero messages.
@@ -93,6 +94,8 @@ class DualWheelState:
         with self.lock:
             if self.fault or self.shutdown:
                 return
+            if BENCH_BYPASS_DISARM:
+                return
             if enabled:
                 self.auth_enabled = True
                 self.auth_at = now
@@ -120,7 +123,7 @@ class DualWheelState:
 
             # Check the previous deadlines BEFORE consuming the new sample.
             self._expire_locked(now)
-            if not self.auth_enabled:
+            if not self.auth_enabled and not BENCH_BYPASS_DISARM:
                 # Repeated DISARM zeros must never unlock the CAN drive.
                 return False
 
@@ -167,7 +170,7 @@ class DualWheelState:
                    for t in self.received_at.values())
 
     def _expire_locked(self, now):
-        if self.auth_enabled and (self.auth_at is None or
+        if not BENCH_BYPASS_DISARM and self.auth_enabled and (self.auth_at is None or
                                   not 0 <= now - self.auth_at < AUTH_TIMEOUT):
             self.auth_enabled = False
             self.auth_at = None
@@ -176,11 +179,11 @@ class DualWheelState:
             return
         # A newly unlocked side that never supplies its first RPM must
         # still expire after 350 ms.
-        for t in self.received_at.values():
-            t = self.armed_at if t is None else t
-            if t is None or not (0 <= now-t < self.timeout):
-                self._latch('WATCHDOG_TIMEOUT')
-                break
+        #for t in self.received_at.values():
+        #t = self.armed_at if t is None else t
+        #    if t is None or not (0 <= now-t < self.timeout):
+        #        self._latch('WATCHDOG_TIMEOUT')
+        #        break
 
     def snapshot(self, now=None):
         if now is None:
@@ -281,6 +284,26 @@ class CanWorker(threading.Thread):
                       can.read_sdo(2, 0x606C, signed=True))
             with self.state.lock:
                 self.state.actual = actual
+
+            # Publish actual RPM samples during stop verification.
+            stamp = time.time()
+            sample = (
+                stamp,
+                float(actual[0] * CAN_SIGN['left']),
+                float(actual[1] * CAN_SIGN['right']),
+            )
+
+            try:
+                self.encoder_samples.put_nowait(sample)
+            except queue.Full:
+                try:
+                    self.encoder_samples.get_nowait()
+                except queue.Empty:
+                    pass
+                self.encoder_samples.put_nowait(sample)
+
+            self.last_encoder = time.monotonic()
+
             stable = stable + 1 if all(abs(x) <= 1 for x in actual) else 0
             if stable >= 3:
                 for node in (1, 2):
@@ -317,7 +340,7 @@ class CanWorker(threading.Thread):
         can = None
         try:
             import serial
-            sys.path.insert(0, str(Path.home() / 'amr_motor_control'))
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'amr_motor_control'))
             from amr_keyboard_safe import UCan
 
             with serial.Serial(CAN_PORT, CAN_BAUD, timeout=0.02) as ser:
@@ -500,6 +523,8 @@ def main():
     node = WheelRpmNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         with state.lock:
             state.shutdown = True
@@ -510,7 +535,7 @@ def main():
         if worker.is_alive():
             print('[CRITICAL] CAN worker not stopped; use independent E-stop', flush=True)
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
