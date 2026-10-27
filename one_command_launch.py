@@ -9,6 +9,7 @@ If a managed service fails, only processes started by this launcher are stopped.
 Place this file in the root of hana-amr-project, then run:
     python3 one_command_launch.py --dry-run
     python3 one_command_launch.py
+    python3 one_command_launch.py --see-log
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -48,6 +48,31 @@ SCRIPTS = {
     'rpm_viewer': ROOT / 'amr_tools/actual_rpm_viewer.py',
     'encoder_viewer': ROOT / 'amr_tools/encoder_echo.py',
 }
+
+# Keep one set of logs per launch instead of creating timestamped directories.
+LOG_NAMES = (
+    'imu_driver', 'imu_rpy', 'imu_ws', 'camera', 'motor_enable',
+    'can', 'bridge', 'calibration', 'web_ui', 'rpm_viewer', 'encoder_viewer',
+)
+ATTENTION_RE = re.compile(
+    r'\b(?:ERROR|CRITICAL|FATAL|WARN(?:ING)?|FAULT|DISCONNECTED|'
+    r'FAILED|FAILURE|TIMEOUT|EXCEPTION|ACTION)\b'
+    r'|\b[A-Za-z_]*(?:Error|Exception)(?::|\()',
+    re.I,
+)
+
+
+def console_log_line(line: str, see_log: bool, traceback_active: bool) -> tuple[bool, bool]:
+    """Keep error/warning and Python traceback details visible in quiet mode."""
+    if 'Traceback (most recent call last):' in line:
+        traceback_active = True
+    visible = see_log or traceback_active or ATTENTION_RE.search(line) is not None
+    if traceback_active and re.search(
+        r'\b(?:[A-Za-z_]*Error|[A-Za-z_]*Exception|KeyboardInterrupt|SystemExit):',
+        line,
+    ):
+        traceback_active = False
+    return visible, traceback_active
 
 
 class LaunchError(RuntimeError):
@@ -181,9 +206,10 @@ def validate_inputs(args: argparse.Namespace) -> None:
 
 
 class Supervisor:
-    def __init__(self, env: dict[str, str], log_dir: Path):
+    def __init__(self, env: dict[str, str], log_dir: Path, see_log: bool = False):
         self.env = env
         self.log_dir = log_dir
+        self.see_log = see_log
         self.children: list[Child] = []
         self.stopping = False
         self.interrupted = False
@@ -194,6 +220,7 @@ class Supervisor:
     def _log_reader(self, child: Child) -> None:
         assert child.proc.stdout is not None
         with child.log_path.open('w', encoding='utf-8') as output:
+            traceback_active = False
             for raw in child.proc.stdout:
                 line = raw.rstrip('\n')
                 output.write(line + '\n')
@@ -201,7 +228,11 @@ class Supervisor:
                 child.last_lines.append(line)
                 if len(child.last_lines) > 45:
                     child.last_lines.pop(0)
-                print(f'[{child.name}] {line}', flush=True)
+                visible, traceback_active = console_log_line(
+                    line, self.see_log, traceback_active
+                )
+                if visible:
+                    print(f'[{child.name}] {line}', flush=True)
                 if any(marker in line for marker in child.ready_markers):
                     child.ready.set()
                 if any(marker in line for marker in child.fatal_markers):
@@ -385,7 +416,8 @@ def choose_camera_python(requested: str | None, ros_python: str) -> str:
     return ros_python
 
 
-def ensure_motors_enabled(env: dict[str, str], py: str, log_dir: Path) -> None:
+def ensure_motors_enabled(env: dict[str, str], py: str, log_dir: Path,
+                          see_log: bool = False) -> None:
     """One-shot preflight: check zero/mode; enable only drives not yet enabled."""
     argv = [py, str(SCRIPTS['motor_enable']), '--port', can_serial_port()]
     print(f'\n[START] motor_enable: {shlex.join(argv)}', flush=True)
@@ -405,8 +437,11 @@ def ensure_motors_enabled(env: dict[str, str], py: str, log_dir: Path) -> None:
 
     output = result.stdout or ''
     (log_dir / 'motor_enable.log').write_text(output, encoding='utf-8')
+    traceback_active = False
     for line in output.splitlines():
-        print(f'[motor_enable] {line}', flush=True)
+        visible, traceback_active = console_log_line(line, see_log, traceback_active)
+        if visible:
+            print(f'[motor_enable] {line}', flush=True)
     if result.returncode != 0 or '[SUCCESS]' not in output:
         raise LaunchError(
             f'Motor enable preflight failed (code={result.returncode}); '
@@ -418,6 +453,8 @@ def ensure_motors_enabled(env: dict[str, str], py: str, log_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description='One-command real AMR startup supervisor')
     parser.add_argument('--dry-run', action='store_true', help='Print plan; never access hardware')
+    parser.add_argument('--see-log', action='store_true',
+                        help='Show all child logs in terminal (default: errors/warnings only)')
     parser.add_argument('--skip-imu', action='store_true', help='Do not start IMU services')
     parser.add_argument('--external-imu-driver', action='store_true',
                         help='Wait for an existing /imu/data publisher')
@@ -439,6 +476,7 @@ def main() -> int:
     if args.dry_run:
         print('Repository:', ROOT)
         print('ROS: Jazzy, domain 31, custom_amr_ws and real_amr overlays if present')
+        print('Logs: one reusable set of *.log files under', args.log_dir.expanduser())
         print('Stages:')
         if not args.skip_imu:
             print('  IMU driver (' + ('external' if args.external_imu_driver else 'launch')
@@ -479,10 +517,15 @@ def main() -> int:
             raise LaunchError(f'{host}:{port} already serves connections. '
                               'Do not start a duplicate service.')
 
-    date = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    logs = args.log_dir.expanduser() / date
-    logs.mkdir(parents=True, exist_ok=False)
-    supervisor = Supervisor(env, logs)
+    logs = args.log_dir.expanduser()
+    logs.mkdir(parents=True, exist_ok=True)
+    # Truncate only our known service logs. Older timestamped directories
+    # are left untouched; no additional directories are created per run.
+    for name in LOG_NAMES:
+        (logs / f'{name}.log').write_text('', encoding='utf-8')
+    log_mode = 'all output visible' if args.see_log else 'normal output hidden; --see-log to display'
+    print(f'[LOG] Reusing {logs} ({log_mode})', flush=True)
+    supervisor = Supervisor(env, logs, see_log=args.see_log)
     signal.signal(signal.SIGINT, supervisor.request_stop)
     signal.signal(signal.SIGTERM, supervisor.request_stop)
     try:
@@ -508,7 +551,7 @@ def main() -> int:
             supervisor.wait_http('AI camera', 'http://127.0.0.1:8090/health',
                                  lambda body: body == b'CAMERA_OK', 90)
 
-        ensure_motors_enabled(env, py, logs)
+        ensure_motors_enabled(env, py, logs, see_log=args.see_log)
 
         can = supervisor.start('can', [py, str(SCRIPTS['can'])],
                                ready_markers=('[READY] ROS wheel RPM topics',),
