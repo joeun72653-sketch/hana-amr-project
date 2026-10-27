@@ -472,7 +472,7 @@ def main() -> int:
     if not args.skip_camera:
         ports.append(("127.0.0.1", 8090))
     if not args.skip_calibration:
-        ports.append((env.get('AMR_CAL_HOST', '192.168.0.29'),
+        ports.append((env.get('AMR_CAL_HOST', '192.168.0.35'),
                       int(env.get('AMR_CAL_PORT', '8877'))))
     for host, port in ports:
         if port_open(host, port):
@@ -526,7 +526,7 @@ def main() -> int:
 
         if not args.skip_calibration:
             supervisor.start('calibration', [py, str(SCRIPTS['calibration'])])
-            host = env.get('AMR_CAL_HOST', '192.168.0.29')
+            host = env.get('AMR_CAL_HOST', '192.168.0.35')
             port = int(env.get('AMR_CAL_PORT', '8877'))
             url = f'http://{host}:{port}/status'
             supervisor.wait_http('Calibration manager', url,
@@ -545,7 +545,7 @@ def main() -> int:
             supervisor.start('encoder_viewer', [py, str(SCRIPTS['encoder_viewer'])])
             supervisor.until('Encoder viewer', lambda: True, 1)
 
-        ui_host = env.get('AMR_CAL_HOST', '192.168.0.29')
+        ui_host = env.get('AMR_CAL_HOST', '192.168.0.35')
         print(f'\n[ALL READY] http://{ui_host}:8000', flush=True)
         print('[INFO] Press Ctrl+C to stop all managed services.', flush=True)
         print('[INFO] No ROS motion authorization or nonzero RPM was sent by the launcher.', flush=True)
@@ -560,7 +560,7 @@ def main() -> int:
                     checks.append(('Camera', 'http://127.0.0.1:8090/health',
                                    lambda b: b == b'CAMERA_OK'))
                 if not args.skip_calibration:
-                    host = env.get('AMR_CAL_HOST', '192.168.0.29')
+                    host = env.get('AMR_CAL_HOST', '192.168.0.35')
                     port = int(env.get('AMR_CAL_PORT', '8877'))
                     checks.append(('Calibration manager', f'http://{host}:{port}/status',
                                    lambda b: json.loads(b).get('ready') is True))

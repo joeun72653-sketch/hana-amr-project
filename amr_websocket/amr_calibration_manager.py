@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-HOST = os.environ.get('AMR_CAL_HOST', '192.168.0.29')
+HOST = os.environ.get('AMR_CAL_HOST', '192.168.0.35')
 PORT = int(os.environ.get('AMR_CAL_PORT', '8877'))
 ORIGIN = os.environ.get('AMR_CAL_WEB_ORIGIN', f'http://{HOST}:8000').rstrip('/')
 ALLOWED_NETS = tuple(ipaddress.ip_network(item.strip(), strict=False) for item in
