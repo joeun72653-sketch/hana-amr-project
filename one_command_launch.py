@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Start and supervise the AMR-PC services from one terminal.
 
-This launcher does not issue nonzero wheel commands, ARM, or calibration START.
-The CAN worker owns its existing drive initialization and stop verification.
+This launcher never sends nonzero wheel commands, ROS ARM, or calibration START.
+Before starting CAN, it checks both drive states and enables only disabled drives.
+The CAN worker owns its existing stop verification.
 If a managed service fails, only processes started by this launcher are stopped.
 
 Place this file in the root of hana-amr-project, then run:
@@ -42,6 +43,7 @@ SCRIPTS = {
     'camera': ROOT / 'amr_websocket/amr_openvino_camera_depth.py',
     'calibration': ROOT / 'amr_websocket/amr_calibration_manager.py',
     'can': CAN_SCRIPT,
+    'motor_enable': ROOT / 'amr_motor_control/amr_enable_motors.py',
     'bridge': ROOT / 'amr_remote_client/amr_ws_to_ros.py',
     'rpm_viewer': ROOT / 'amr_tools/actual_rpm_viewer.py',
     'encoder_viewer': ROOT / 'amr_tools/encoder_echo.py',
@@ -129,8 +131,16 @@ def verify_can_import_source() -> None:
         )
 
 
+def can_serial_port() -> str:
+    can_source = CAN_SCRIPT.read_text(encoding='utf-8')
+    match = re.search(r"^CAN_PORT\s*=\s*['\"]([^'\"]+)['\"]", can_source, re.M)
+    if not match:
+        raise LaunchError('CAN_PORT missing in CAN worker')
+    return match.group(1)
+
+
 def validate_inputs(args: argparse.Namespace) -> None:
-    required = ['can']
+    required = ['can', 'motor_enable']
     if not args.skip_bridge:
         required.append('bridge')
     if not args.skip_calibration:
@@ -165,10 +175,9 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not args.skip_camera and not CAMERA_MODEL.is_dir():
         raise LaunchError(f'OpenVINO model missing: {CAMERA_MODEL}')
     verify_can_import_source()
-    can_source = CAN_SCRIPT.read_text(encoding='utf-8')
-    match = re.search(r"^CAN_PORT\s*=\s*['\"]([^'\"]+)['\"]", can_source, re.M)
-    if not match or not Path(match.group(1)).exists():
-        raise LaunchError(f'CAN serial device missing: {match.group(1) if match else "CAN_PORT"}')
+    port = can_serial_port()
+    if not Path(port).exists():
+        raise LaunchError(f'CAN serial device missing: {port}')
 
 
 class Supervisor:
@@ -376,6 +385,36 @@ def choose_camera_python(requested: str | None, ros_python: str) -> str:
     return ros_python
 
 
+def ensure_motors_enabled(env: dict[str, str], py: str, log_dir: Path) -> None:
+    """One-shot preflight: check zero/mode; enable only drives not yet enabled."""
+    argv = [py, str(SCRIPTS['motor_enable']), '--port', can_serial_port()]
+    print(f'\n[START] motor_enable: {shlex.join(argv)}', flush=True)
+    try:
+        result = subprocess.run(
+            argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=45, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or b''
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors='replace')
+        (log_dir / 'motor_enable.log').write_text(partial, encoding='utf-8')
+        raise LaunchError('Motor enable preflight timed out; inspect drive/E-stop state') from exc
+    except OSError as exc:
+        raise LaunchError(f'Motor enable preflight could not start: {exc}') from exc
+
+    output = result.stdout or ''
+    (log_dir / 'motor_enable.log').write_text(output, encoding='utf-8')
+    for line in output.splitlines():
+        print(f'[motor_enable] {line}', flush=True)
+    if result.returncode != 0 or '[SUCCESS]' not in output:
+        raise LaunchError(
+            f'Motor enable preflight failed (code={result.returncode}); '
+            f'log={log_dir / "motor_enable.log"}'
+        )
+    print('[READY] Motor drives Operation Enabled, target/actual 0 verified', flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='One-command real AMR startup supervisor')
     parser.add_argument('--dry-run', action='store_true', help='Print plan; never access hardware')
@@ -406,6 +445,7 @@ def main() -> int:
                   + ') -> /imu/data -> RPY converter -> IMU WebSocket :8766')
         if not args.skip_camera:
             print('  OpenVINO + Orbbec camera -> /health :8090')
+        print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
         print('  CANopen controller -> verified zero + /amr_motor_state')
         if not args.skip_bridge:
             print('  Windows WebSocket bridge -> ws://192.168.0.31:8765 '
@@ -468,6 +508,8 @@ def main() -> int:
             supervisor.wait_http('AI camera', 'http://127.0.0.1:8090/health',
                                  lambda body: body == b'CAMERA_OK', 90)
 
+        ensure_motors_enabled(env, py, logs)
+
         can = supervisor.start('can', [py, str(SCRIPTS['can'])],
                                ready_markers=('[READY] ROS wheel RPM topics',),
                                fatal_markers=('[CRITICAL CAN]', '[CRITICAL] CAN worker'))
@@ -506,7 +548,7 @@ def main() -> int:
         ui_host = env.get('AMR_CAL_HOST', '192.168.0.29')
         print(f'\n[ALL READY] http://{ui_host}:8000', flush=True)
         print('[INFO] Press Ctrl+C to stop all managed services.', flush=True)
-        print('[INFO] No ARM or nonzero RPM was sent by the launcher.', flush=True)
+        print('[INFO] No ROS motion authorization or nonzero RPM was sent by the launcher.', flush=True)
         next_health_check = time.monotonic() + 3
         failed_health_checks: dict[str, int] = {}
         while True:
