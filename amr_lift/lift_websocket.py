@@ -7,8 +7,6 @@ hardware E-stop, hard limits, contactor or a drive-integrated safety function.
 import argparse
 import asyncio
 import json
-import ipaddress
-import os
 import signal
 import time
 from pathlib import Path
@@ -57,24 +55,8 @@ class Controller:
         self.state = 'UNKNOWN'
         self.last = None
         self.fault = None
-        # Persistent access settings allow the original launch command.
-        # Environment variables still override file settings when supplied.
-        access_file = Path.home() / '.amr_lift_access.json'
-        access = read_json(access_file) or {}
-        ips = os.environ.get('AMR_LIFT_ALLOWED_IPS') or access.get('allowed_ips', '')
-        origin = os.environ.get('AMR_LIFT_ALLOWED_ORIGIN') or access.get('allowed_origin', '')
-        if not isinstance(ips, str) or not isinstance(origin, str):
-            raise RuntimeError('Invalid ~/.amr_lift_access.json access settings')
-        self.allowed_clients = [ipaddress.ip_network(v.strip(), strict=False)
-            for v in ips.split(',') if v.strip()]
-        self.allowed_origin = origin.strip()
-        if not self.allowed_clients or not self.allowed_origin:
-            raise RuntimeError(
-                'One-time setup required: configure ~/.amr_lift_access.json '
-                'with allowed_ips (browser client IPs) and allowed_origin '
-                '(e.g. http://192.168.0.35:8000). '
-                'Then launch with the original python command.'
-            )
+        # DEVELOPMENT MODE: no WebSocket authentication/access allowlist.
+        # Use only on an isolated test network; do not expose port 8767 publicly.
         self.shutting_down = False
 
     def motor_safe(self):
@@ -197,16 +179,6 @@ class Controller:
             await asyncio.sleep(0.12)
 
     async def handle(self, ws):
-        peer = ws.remote_address
-        origin = ws.request.headers.get('Origin') if hasattr(ws, 'request') else ws.request_headers.get('Origin')
-        try:
-            client_ip = ipaddress.ip_address(peer[0])
-        except (ValueError, TypeError, IndexError):
-            await ws.close(code=1008, reason='invalid client address')
-            return
-        if origin != self.allowed_origin or not any(client_ip in network for network in self.allowed_clients):
-            await ws.close(code=1008, reason='client or origin not allowed')
-            return
         self.clients.add(ws)
         await self.emit(ws, self.snapshot())
         try:
@@ -267,8 +239,7 @@ async def main_async(args):
     if not c.serial.connect():
         raise RuntimeError('Cannot open serial port '+args.port)
     print('\n[LIFT] Listening on 0.0.0.0:8767',flush=True)
-    print('[LIFT] Allowed clients:',c.allowed_clients,flush=True)
-    print('[LIFT] Allowed origin:',c.allowed_origin,flush=True)
+    print('[WARNING] DEVELOPMENT MODE: no access authentication. Isolate network.',flush=True)
     print('[LIFT] Motor ROS bridge with interlock must be running and DISARMED.',flush=True)
     monitor=asyncio.create_task(c.loop())
     try:
