@@ -247,10 +247,21 @@ class AMRBridge(Node):
     def control_tick(self):
         self.publish_motor_interlock()
         if not self.lift_safe_for_drive():
+            # Lift owns the stationary period. Keep the ARM lease alive, but
+            # never publish nonzero wheel RPM while the lift is moving.
+            # If wheel motion was ongoing, fail closed and require a new ARM.
             with self.lock:
-                running_or_armed = self.phase != 'DISARMED'
-            if running_or_armed:
+                phase = self.phase
+                session = self.session
+            if phase == 'RUNNING':
                 self.stop(disarm=True)
+                return
+            with self.lock:
+                self.requested = (0.0, 0.0)
+                self.command_at = None
+                self.auth_pub.publish(Bool(data=session is not None and phase != 'DISARMED'))
+            if session is not None and phase != 'DISARMED':
+                self.zero()
             return
         # Calibration owns motor-command publishing while this flag exists.
         if CAL_FLAG.exists():
@@ -433,9 +444,8 @@ async def run_bridge(bridge):
                         print('[STOPPING] Zero requested', flush=True)
                         continue
                     if not bridge.lift_safe_for_drive():
-                        bridge.stop(disarm=True)
-                        session = None
-                        await send(ws, {'kind': 'fault', 'reason': 'lift_interlock'})
+                        # Reject drive commands without destroying the ARM
+                        # session; control_tick continuously publishes zero.
                         continue
                     if kind != 'drive_request' or session is None or msg.get('session') != session:
                         continue
