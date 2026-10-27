@@ -54,10 +54,14 @@ class AMRBridge(Node):
         super().__init__('amr_ws_to_ros')
         self.bench_motion = bench_motion
         self.calibration_hold = False
-        self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
-        self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
-        self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
+        # No Web-controlled ROS publishers exist until an explicit Web ARM.
+        self.left_pub = None
+        self.right_pub = None
+        self.auth_pub = None
         self.lock = threading.RLock()
+        self.release_started = None
+        self.release_stop_before = None
+        self.release_needs_new_stop = False
         self.motor_state = None
         self.state_at = None
         self.session = None
@@ -105,13 +109,51 @@ class AMRBridge(Node):
                 and s.get('timeout_latched') is False
                 and s.get('status') == 'ARMED')
 
+    def _create_web_publishers_locked(self):
+        """Only Web ARM creates RPM and Web-authorization publishers."""
+        if any(pub is not None for pub in (self.left_pub, self.right_pub, self.auth_pub)):
+            raise RuntimeError('Web publisher ownership already active')
+        try:
+            self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
+            self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
+            self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
+        except Exception:
+            self._destroy_web_publishers_locked()
+            raise
+        print('[WEB ARM] RPM publishers created', flush=True)
+
+    def _destroy_web_publishers_locked(self):
+        """Remove Web control endpoints after DISARM stop verification."""
+        had_publisher = any(
+            pub is not None for pub in (self.left_pub, self.right_pub, self.auth_pub)
+        )
+        for name in ('left_pub', 'right_pub', 'auth_pub'):
+            pub = getattr(self, name)
+            if pub is not None:
+                try:
+                    if not self.destroy_publisher(pub):
+                        print(f'[CRITICAL] Failed to destroy {name}', flush=True)
+                except Exception as exc:
+                    print(f'[CRITICAL] Failed to destroy {name}: {exc!r}', flush=True)
+                finally:
+                    setattr(self, name, None)
+        if had_publisher:
+            print('[WEB DISARM] RPM publishers removed', flush=True)
+
+    def _publish_pair_locked(self, left, right):
+        if self.left_pub is None or self.right_pub is None:
+            return
+        self.left_pub.publish(Float64(data=float(left)))
+        self.right_pub.publish(Float64(data=float(right)))
+
     def publish(self, left, right):
-        # Keep RPM publication ordered against DISARM under the same lock.
+        # Keep RPM publication ordered against DISARM and publisher teardown.
         with self.lock:
-            if CAL_FLAG.exists() or self.session is None or self.phase == 'DISARMED':
+            if CAL_FLAG.exists() or self.session is None or self.phase in (
+                'DISARMED', 'RELEASING'
+            ):
                 return
-            self.left_pub.publish(Float64(data=float(left)))
-            self.right_pub.publish(Float64(data=float(right)))
+            self._publish_pair_locked(left, right)
 
     def zero(self):
         self.publish(0, 0)
@@ -119,13 +161,19 @@ class AMRBridge(Node):
     def arm(self, token):
         if CAL_FLAG.exists():
             print('[CAL] ARM ignored during calibration', flush=True)
-            return
+            return False
         with self.lock:
+            # An earlier session must release its publishers before a new ARM.
+            if self.phase != 'DISARMED':
+                print('[BLOCKED] Web ARM waiting for previous stop/disarm', flush=True)
+                return False
+            self._create_web_publishers_locked()
             self.session = token
             self.phase = 'ARM_READY'
             self.requested = (0.0, 0.0)
             self.command_at = None
             self.fault_reason = None
+            return True
 
     def set_phase(self, phase):
         with self.lock:
@@ -148,23 +196,69 @@ class AMRBridge(Node):
             self.command_at = None
             if disarm:
                 self.session = None
-                self.phase = 'DISARMED'
-                self.auth_pub.publish(Bool(data=False))
-            else:
-                self.phase = 'STOPPING'
-                self.stop_at = time.monotonic()
-                self.stop_status_at = self.state_at
-                self.stop_count_before = (state or {}).get('stop_verify_count')
-                self.stop_requires_new = (
+                if self.phase == 'RELEASING':
+                    return
+                if self.left_pub is None and self.right_pub is None:
+                    self.phase = 'DISARMED'
+                    # Critically, an unarmed Web bridge never creates or
+                    # publishes Web authorization or RPM messages.
+                    return
+                # Revoke Web authority, then send a verified stop before
+                # removing its RPM publishers from the ROS graph.
+                self.phase = 'RELEASING'
+                self.release_started = time.monotonic()
+                self.release_stop_before = (state or {}).get('stop_verify_count')
+                self.release_needs_new_stop = (
                     any(x != 0 for x in (state or {}).get('applied', []))
                     or any(x != 0 for x in (state or {}).get('actual', []))
                     or (previous_phase == 'RUNNING' and not self.is_stopped(state))
                 )
-        # Deauthorization is a separate ROS signal. The CAN worker performs
-        # a verified dual-wheel zero stop on the authorization falling edge.
-        # Never re-arm the CAN node by repeatedly publishing DISARM zeros.
-        if not disarm:
-            self.zero()
+                if self.auth_pub is not None:
+                    self.auth_pub.publish(Bool(data=False))
+                self._publish_pair_locked(0, 0)
+                print('[WEB DISARM] Stopping before publisher teardown', flush=True)
+                return
+            if self.phase in ('DISARMED', 'RELEASING') or self.session is None:
+                return
+            self.phase = 'STOPPING'
+            self.stop_at = time.monotonic()
+            self.stop_status_at = self.state_at
+            self.stop_count_before = (state or {}).get('stop_verify_count')
+            self.stop_requires_new = (
+                any(x != 0 for x in (state or {}).get('applied', []))
+                or any(x != 0 for x in (state or {}).get('actual', []))
+                or (previous_phase == 'RUNNING' and not self.is_stopped(state))
+            )
+            if not CAL_FLAG.exists():
+                self._publish_pair_locked(0, 0)
+
+    def _release_tick(self, *, calibration_active=False):
+        """Only a prior Web ARM can enter this transient stop state."""
+        with self.lock:
+            if self.phase != 'RELEASING':
+                return
+            if not calibration_active:
+                self._publish_pair_locked(0, 0)
+            state = self.state()
+            fresh = (self.state_at is not None and
+                     self.release_started is not None and
+                     self.state_at > self.release_started)
+            before = self.release_stop_before
+            after = (state or {}).get('stop_verify_count')
+            verified = (
+                fresh and self.is_stopped(state) and
+                (not self.release_needs_new_stop or
+                 (type(before) is int and type(after) is int and after > before))
+            )
+            timed_out = (self.release_started is not None and
+                         time.monotonic() - self.release_started >= STOP_TIMEOUT)
+            if verified or timed_out:
+                if not verified:
+                    print('[CRITICAL] Web DISARM stop unverified; '
+                          'check hardware E-stop and CAN drive state', flush=True)
+                self._destroy_web_publishers_locked()
+                self.phase = 'DISARMED'
+                self.release_started = None
 
     def stop_completed(self):
         s = self.state()
@@ -190,21 +284,22 @@ class AMRBridge(Node):
             with self.lock:
                 if not self.calibration_hold:
                     self.calibration_hold = True
-                    self.session = None
-                    self.phase = 'DISARMED'
-                    self.requested = (0.0, 0.0)
-                    self.command_at = None
-                    print('[CAL] Calibration active: Web RPM publishing suspended',
+                    print('[CAL] Calibration active: Web control releasing',
                           flush=True)
-                # Deauthorize the Web bridge; do not send wheel RPM zeros.
-                self.auth_pub.publish(Bool(data=False))
+                    self.stop(disarm=True)
+            # Calibration owns the command topics. Never keep sending Web
+            # zeros while it is in progress, even during stop verification.
+            self._release_tick(calibration_active=True)
             return
 
         with self.lock:
             if self.calibration_hold:
                 self.calibration_hold = False
-                print('[CAL] Calibration ended: Web bridge resumed; ARM required',
+                print('[CAL] Calibration ended: Web control remains DISARMED',
                       flush=True)
+            if self.phase == 'RELEASING':
+                self._release_tick()
+                return
 
         now = time.monotonic()
         with self.lock:
@@ -215,7 +310,8 @@ class AMRBridge(Node):
             authorized = session is not None and phase != 'DISARMED'
             # Hold lock across publish: a DISARM False cannot be followed by
             # a stale True emitted from an earlier timer snapshot.
-            self.auth_pub.publish(Bool(data=authorized))
+            if authorized and self.auth_pub is not None:
+                self.auth_pub.publish(Bool(data=True))
         if not authorized:
             # No left/right RPM messages at all while DISARMED.
             return
@@ -333,10 +429,13 @@ async def run_bridge(bridge):
                         if not isinstance(token, str) or len(token) != 32:
                             continue
                         bridge.stop(disarm=True)
+                        if not bridge.arm(token):
+                            session = None
+                            await send(ws, {'kind': 'fault', 'reason': 'web_arm_waiting_for_stop'})
+                            continue
                         session = token
                         last_seq = -1
                         handshake_at = None
-                        bridge.arm(token)
                         print('[ARM_READY] Session registered', flush=True)
                         continue
                     if kind == 'stop':
@@ -435,6 +534,14 @@ def main():
         print('[STOP] Keyboard interrupt', flush=True)
     finally:
         bridge.stop(disarm=True)
+        # Let the active ROS timer finish Web-owned stop verification before
+        # executor shutdown, so a disconnect cannot strand the final RPM.
+        deadline = time.monotonic() + STOP_TIMEOUT + 0.5
+        while time.monotonic() < deadline:
+            with bridge.lock:
+                if bridge.phase != 'RELEASING':
+                    break
+            time.sleep(0.05)
         executor.shutdown()
         thread.join(timeout=2)
         bridge.destroy_node()
