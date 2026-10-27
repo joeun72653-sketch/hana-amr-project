@@ -57,11 +57,24 @@ class Controller:
         self.state = 'UNKNOWN'
         self.last = None
         self.fault = None
+        # Persistent access settings allow the original launch command.
+        # Environment variables still override file settings when supplied.
+        access_file = Path.home() / '.amr_lift_access.json'
+        access = read_json(access_file) or {}
+        ips = os.environ.get('AMR_LIFT_ALLOWED_IPS') or access.get('allowed_ips', '')
+        origin = os.environ.get('AMR_LIFT_ALLOWED_ORIGIN') or access.get('allowed_origin', '')
+        if not isinstance(ips, str) or not isinstance(origin, str):
+            raise RuntimeError('Invalid ~/.amr_lift_access.json access settings')
         self.allowed_clients = [ipaddress.ip_network(v.strip(), strict=False)
-            for v in os.environ.get('AMR_LIFT_ALLOWED_IPS', '').split(',') if v.strip()]
-        self.allowed_origin = os.environ.get('AMR_LIFT_ALLOWED_ORIGIN', '').strip()
+            for v in ips.split(',') if v.strip()]
+        self.allowed_origin = origin.strip()
         if not self.allowed_clients or not self.allowed_origin:
-            raise RuntimeError('Set AMR_LIFT_ALLOWED_IPS and AMR_LIFT_ALLOWED_ORIGIN before starting Lift server')
+            raise RuntimeError(
+                'One-time setup required: configure ~/.amr_lift_access.json '
+                'with allowed_ips (browser client IPs) and allowed_origin '
+                '(e.g. http://192.168.0.35:8000). '
+                'Then launch with the original python command.'
+            )
         self.shutting_down = False
 
     def motor_safe(self):
