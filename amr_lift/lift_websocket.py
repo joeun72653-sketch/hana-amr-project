@@ -7,6 +7,7 @@ hardware E-stop, hard limits, contactor or a drive-integrated safety function.
 import argparse
 import asyncio
 import json
+import os
 import signal
 import time
 from pathlib import Path
