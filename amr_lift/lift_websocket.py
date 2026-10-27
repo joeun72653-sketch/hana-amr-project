@@ -7,8 +7,8 @@ hardware E-stop, hard limits, contactor or a drive-integrated safety function.
 import argparse
 import asyncio
 import json
+import ipaddress
 import os
-import secrets
 import signal
 import time
 from pathlib import Path
@@ -57,15 +57,19 @@ class Controller:
         self.state = 'UNKNOWN'
         self.last = None
         self.fault = None
-        self.auth_token = secrets.token_urlsafe(24)
+        self.allowed_clients = [ipaddress.ip_network(v.strip(), strict=False)
+            for v in os.environ.get('AMR_LIFT_ALLOWED_IPS', '').split(',') if v.strip()]
+        self.allowed_origin = os.environ.get('AMR_LIFT_ALLOWED_ORIGIN', '').strip()
+        if not self.allowed_clients or not self.allowed_origin:
+            raise RuntimeError('Set AMR_LIFT_ALLOWED_IPS and AMR_LIFT_ALLOWED_ORIGIN before starting Lift server')
         self.shutting_down = False
 
     def motor_safe(self):
         value = read_json(MOTOR_FILE)
         return (value is not None and isinstance(value.get('time'), (float, int))
             and 0 <= time.monotonic() - value['time'] < 0.6
-            and value.get('phase') == 'DISARMED'
-            and value.get('session') is False
+            and ((value.get('phase') == 'DISARMED' and value.get('session') is False)
+                 or (value.get('phase') == 'ARMED_IDLE' and value.get('session') is True))
             and value.get('verified_stopped') is True
             and value.get('calibration') is False)
 
@@ -180,22 +184,23 @@ class Controller:
             await asyncio.sleep(0.12)
 
     async def handle(self, ws):
-        authenticated=False
+        peer = ws.remote_address
+        origin = ws.request.headers.get('Origin') if hasattr(ws, 'request') else ws.request_headers.get('Origin')
+        try:
+            client_ip = ipaddress.ip_address(peer[0])
+        except (ValueError, TypeError, IndexError):
+            await ws.close(code=1008, reason='invalid client address')
+            return
+        if origin != self.allowed_origin or not any(client_ip in network for network in self.allowed_clients):
+            await ws.close(code=1008, reason='client or origin not allowed')
+            return
+        self.clients.add(ws)
+        await self.emit(ws, self.snapshot())
         try:
             async for raw in ws:
                 try: msg=json.loads(raw)
                 except (ValueError,TypeError): continue
                 if not isinstance(msg,dict): continue
-                if not authenticated:
-                    ok=msg.get('kind')=='auth' and secrets.compare_digest(str(msg.get('token','')),self.auth_token)
-                    await self.emit(ws,{'kind':'auth','ok':ok})
-                    if not ok:
-                        await ws.close(code=1008,reason='authentication failed')
-                        return
-                    authenticated=True
-                    self.clients.add(ws)
-                    await self.emit(ws,self.snapshot())
-                    continue
                 kind=msg.get('kind')
                 if kind=='heartbeat':
                     if self.owner is ws:
@@ -249,8 +254,8 @@ async def main_async(args):
     if not c.serial.connect():
         raise RuntimeError('Cannot open serial port '+args.port)
     print('\n[LIFT] Listening on 0.0.0.0:8767',flush=True)
-    print('[LIFT] WEB AUTH TOKEN:',c.auth_token,flush=True)
-    print('[LIFT] Token changes each server restart; enter into the web panel.',flush=True)
+    print('[LIFT] Allowed clients:',c.allowed_clients,flush=True)
+    print('[LIFT] Allowed origin:',c.allowed_origin,flush=True)
     print('[LIFT] Motor ROS bridge with interlock must be running and DISARMED.',flush=True)
     monitor=asyncio.create_task(c.loop())
     try:
