@@ -75,6 +75,16 @@ def console_log_line(line: str, see_log: bool, traceback_active: bool) -> tuple[
     return visible, traceback_active
 
 
+def is_fatal_child_line(name: str, line: str, fatal_markers: tuple[str, ...]) -> bool:
+    """Web command expiry is handled by the bridge's stop/DISARM path.
+
+    Preserve fatal shutdowns for every other bridge fault and managed child.
+    """
+    if name == 'bridge' and line.strip() == '[FAULT] command_timeout':
+        return False
+    return any(marker in line for marker in fatal_markers)
+
+
 class LaunchError(RuntimeError):
     pass
 
@@ -235,7 +245,7 @@ class Supervisor:
                     print(f'[{child.name}] {line}', flush=True)
                 if any(marker in line for marker in child.ready_markers):
                     child.ready.set()
-                if any(marker in line for marker in child.fatal_markers):
+                if is_fatal_child_line(child.name, line, child.fatal_markers):
                     child.fatal = line
 
     def start(self, name: str, argv: list[str], *, ready_markers=(), fatal_markers=()) -> Child:
