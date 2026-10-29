@@ -189,7 +189,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     for name in required:
         if not SCRIPTS[name].is_file():
             raise LaunchError(f'{name} script missing: {SCRIPTS[name]}')
-    if not (ROOT / 'amr_websocket/index.html').is_file():
+    if not args.skip_web_ui and not (ROOT / 'amr_websocket/index.html').is_file():
         raise LaunchError('Web UI index.html missing')
     if not (ROOT / 'amr_imu/config/microstrain.yml').is_file() and not args.skip_imu:
         raise LaunchError('MicroStrain config missing')
@@ -470,6 +470,8 @@ def main() -> int:
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
     parser.add_argument('--skip-calibration', action='store_true')
+    parser.add_argument('--skip-web-ui', action='store_true',
+                        help='Do not start the HTML dashboard HTTP server on port 8000')
     parser.add_argument('--skip-bridge', action='store_true',
                         help='Do not connect to the Windows motor WebSocket')
     parser.add_argument('--web-drive', action='store_true',
@@ -500,7 +502,8 @@ def main() -> int:
                   + ('[WEB MOTION ENABLED]' if args.web_drive else '[DIAGNOSTIC ONLY]'))
         if not args.skip_calibration:
             print('  Calibration manager -> :8877 (no calibration automatically started)')
-        print('  HTML dashboard -> :8000')
+        if not args.skip_web_ui:
+            print('  HTML dashboard -> :8000')
         if args.with_viewers:
             print('  Actual RPM + encoder text monitors')
         print('On any startup/runtime failure: stop launched process groups; '
@@ -514,7 +517,9 @@ def main() -> int:
     py = shutil.which('python3', path=env.get('PATH')) or sys.executable
     cam_py = choose_camera_python(args.camera_python, py)
     # Bound ports are checked before CAN drive initialization begins.
-    ports = [("127.0.0.1", 8000)]
+    ports = []
+    if not args.skip_web_ui:
+        ports.append(("127.0.0.1", 8000))
     if not args.skip_imu:
         ports.append(("127.0.0.1", 8766))
     if not args.skip_camera:
@@ -585,11 +590,12 @@ def main() -> int:
             supervisor.wait_http('Calibration manager', url,
                                  lambda body: json.loads(body).get('ready') is True, 12)
 
-        supervisor.start('web_ui', [py, '-m', 'http.server', '8000',
-                                    '--bind', '0.0.0.0', '--directory',
-                                    str(ROOT / 'amr_websocket')])
-        supervisor.wait_http('Web UI', 'http://127.0.0.1:8000/index.html',
-                             lambda body: b'<html' in body.lower(), 10)
+        if not args.skip_web_ui:
+            supervisor.start('web_ui', [py, '-m', 'http.server', '8000',
+                                        '--bind', '0.0.0.0', '--directory',
+                                        str(ROOT / 'amr_websocket')])
+            supervisor.wait_http('Web UI', 'http://127.0.0.1:8000/index.html',
+                                 lambda body: b'<html' in body.lower(), 10)
 
         if args.with_viewers:
             viewer = supervisor.start('rpm_viewer', [py, str(SCRIPTS['rpm_viewer'])],
@@ -598,8 +604,11 @@ def main() -> int:
             supervisor.start('encoder_viewer', [py, str(SCRIPTS['encoder_viewer'])])
             supervisor.until('Encoder viewer', lambda: True, 1)
 
-        ui_host = env.get('AMR_CAL_HOST', '192.168.0.35')
-        print(f'\n[ALL READY] http://{ui_host}:8000', flush=True)
+        if args.skip_web_ui:
+            print('\n[ALL READY] Managed AMR services running (Web UI disabled)', flush=True)
+        else:
+            ui_host = env.get('AMR_CAL_HOST', '192.168.0.35')
+            print(f'\n[ALL READY] http://{ui_host}:8000', flush=True)
         print('[INFO] Press Ctrl+C to stop all managed services.', flush=True)
         print('[INFO] No ROS motion authorization or nonzero RPM was sent by the launcher.', flush=True)
         next_health_check = time.monotonic() + 3
@@ -607,8 +616,10 @@ def main() -> int:
         while True:
             supervisor.check()
             if time.monotonic() >= next_health_check:
-                checks = [('Web UI', 'http://127.0.0.1:8000/index.html',
-                           lambda b: b'<html' in b.lower())]
+                checks = []
+                if not args.skip_web_ui:
+                    checks.append(('Web UI', 'http://127.0.0.1:8000/index.html',
+                                   lambda b: b'<html' in b.lower()))
                 if not args.skip_camera:
                     checks.append(('Camera', 'http://127.0.0.1:8090/health',
                                    lambda b: b == b'CAMERA_OK'))
