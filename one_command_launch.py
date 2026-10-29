@@ -36,6 +36,8 @@ ROOT = Path(__file__).resolve().parent
 CAL_FLAG = Path.home() / '.amr_calibration_active'
 CAMERA_MODEL = Path.home() / 'amr_openvino/models/epoch22_openvino_model'
 CAN_SCRIPT = ROOT / 'amr_remote_client/amr_ros_wheel_rpm_can.py'
+FAST_DDS_LOOPBACK_PROFILE = ROOT / 'amr_tools/fastdds_loopback.xml'
+CYCLONE_DDS_LOOPBACK_PROFILE = ROOT / 'amr_tools/cyclonedds_loopback.xml'
 SCRIPTS = {
     'imu_rpy': ROOT / 'amr_imu/imu_rpy_node.py',
     'imu_ws': ROOT / 'amr_imu/amr_imu_ws.py',
@@ -152,6 +154,44 @@ def source_ros_environment() -> dict[str, str]:
     return env
 
 
+def configure_local_ros_network(env: dict[str, str]) -> None:
+    """Limit managed ROS2 DDS traffic to loopback; fail on unknown middleware.
+
+    This does not change other processes or add host firewall rules.
+    WebSocket/HTTP and camera services are skipped separately by the launcher.
+    """
+    rmw = env.get('RMW_IMPLEMENTATION') or 'rmw_fastrtps_cpp'
+    profiles = {
+        'rmw_fastrtps_cpp': FAST_DDS_LOOPBACK_PROFILE,
+        'rmw_cyclonedds_cpp': CYCLONE_DDS_LOOPBACK_PROFILE,
+    }
+    if rmw not in profiles:
+        raise LaunchError(
+            f'--local-ros-only cannot isolate RMW_IMPLEMENTATION={rmw!r}; '
+            'supported: rmw_fastrtps_cpp, rmw_cyclonedds_cpp'
+        )
+    profile = profiles[rmw]
+    if not profile.is_file():
+        raise LaunchError(f'Local-only DDS profile missing: {profile}')
+
+    env['RMW_IMPLEMENTATION'] = rmw
+    env['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
+    env['ROS_STATIC_PEERS'] = ''
+    env.pop('ROS_DISCOVERY_SERVER', None)
+    env.pop('ROS_LOCALHOST_ONLY', None)
+    if rmw == 'rmw_fastrtps_cpp':
+        env['FASTDDS_DEFAULT_PROFILES_FILE'] = str(profile)
+        env['SKIP_DEFAULT_XML'] = '0'
+        env.pop('FASTRTPS_DEFAULT_PROFILES_FILE', None)
+        env.pop('CYCLONEDDS_URI', None)
+    else:
+        env['CYCLONEDDS_URI'] = profile.as_uri()
+        env.pop('FASTDDS_DEFAULT_PROFILES_FILE', None)
+        env.pop('FASTRTPS_DEFAULT_PROFILES_FILE', None)
+    print(f'[LOCAL ROS ONLY] DDS {rmw} restricted to loopback (lo); '
+          'external network services disabled', flush=True)
+
+
 def verify_can_import_source() -> None:
     """Require CAN to import the reviewed helper from this Git checkout."""
     repo_helper = ROOT / 'amr_motor_control/amr_keyboard_safe.py'
@@ -181,7 +221,9 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not args.skip_calibration:
         required.append('calibration')
     if not args.skip_imu:
-        required += ['imu_rpy', 'imu_ws', 'ros_probe']
+        required += ['imu_rpy', 'ros_probe']
+        if not args.local_ros_only:
+            required.append('imu_ws')
     if not args.skip_camera:
         required.append('camera')
     if args.with_viewers:
@@ -472,6 +514,10 @@ def main() -> int:
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--skip-web-ui', action='store_true',
                         help='Do not start the HTML dashboard HTTP server on port 8000')
+    parser.add_argument('--local-ros-only', action='store_true',
+                        help='Keep managed ROS2 traffic on loopback; disable all HTTP, '
+                             'WebSocket, and camera services (no external NIC traffic '
+                             'from managed services)')
     parser.add_argument('--skip-bridge', action='store_true',
                         help='Do not connect to the Windows motor WebSocket')
     parser.add_argument('--web-drive', action='store_true',
@@ -482,17 +528,29 @@ def main() -> int:
     parser.add_argument('--log-dir', type=Path,
                         default=Path.home() / 'amr_one_command_logs')
     args = parser.parse_args()
+    if args.local_ros_only and args.web_drive:
+        parser.error('--web-drive conflicts with --local-ros-only')
+    if args.local_ros_only and args.external_imu_driver and not args.skip_imu:
+        parser.error('--local-ros-only cannot isolate an external IMU driver')
+    if args.local_ros_only:
+        args.skip_camera = True
+        args.skip_bridge = True
+        args.skip_calibration = True
+        args.skip_web_ui = True
     if args.web_drive and args.skip_bridge:
         parser.error('--web-drive conflicts with --skip-bridge')
 
     if args.dry_run:
         print('Repository:', ROOT)
         print('ROS: Jazzy, domain 31, custom_amr_ws and real_amr overlays if present')
+        if args.local_ros_only:
+            print('  LOCAL ROS ONLY: loopback DDS; no external HTTP/WebSocket/camera')
         print('Logs: one reusable set of *.log files under', args.log_dir.expanduser())
         print('Stages:')
         if not args.skip_imu:
             print('  IMU driver (' + ('external' if args.external_imu_driver else 'launch')
-                  + ') -> /imu/data -> RPY converter -> IMU WebSocket :8766')
+                  + ') -> /imu/data -> RPY converter'
+                  + ('' if args.local_ros_only else ' -> IMU WebSocket :8766'))
         if not args.skip_camera:
             print('  OpenVINO + Orbbec camera -> /health :8090')
         print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
@@ -512,6 +570,8 @@ def main() -> int:
 
     validate_inputs(args)
     env = source_ros_environment()
+    if args.local_ros_only:
+        configure_local_ros_network(env)
     if not shutil.which('ros2', path=env.get('PATH')):
         raise LaunchError('ros2 CLI is unavailable after sourcing setup.bash')
     py = shutil.which('python3', path=env.get('PATH')) or sys.executable
@@ -520,7 +580,7 @@ def main() -> int:
     ports = []
     if not args.skip_web_ui:
         ports.append(("127.0.0.1", 8000))
-    if not args.skip_imu:
+    if not args.skip_imu and not args.local_ros_only:
         ports.append(("127.0.0.1", 8766))
     if not args.skip_camera:
         ports.append(("127.0.0.1", 8090))
@@ -557,8 +617,9 @@ def main() -> int:
                                   35, best_effort=True)
             supervisor.start('imu_rpy', [py, str(SCRIPTS['imu_rpy'])])
             supervisor.wait_topic('IMU RPY', '/amr/imu/rpy', 'std_msgs/msg/String', 15)
-            supervisor.start('imu_ws', [py, str(SCRIPTS['imu_ws'])])
-            supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
+            if not args.local_ros_only:
+                supervisor.start('imu_ws', [py, str(SCRIPTS['imu_ws'])])
+                supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
 
         if not args.skip_camera:
             supervisor.start('camera', [cam_py, str(SCRIPTS['camera'])],
@@ -604,7 +665,10 @@ def main() -> int:
             supervisor.start('encoder_viewer', [py, str(SCRIPTS['encoder_viewer'])])
             supervisor.until('Encoder viewer', lambda: True, 1)
 
-        if args.skip_web_ui:
+        if args.local_ros_only:
+            print('\n[ALL READY] Local ROS only: motor + IMU, no external network services',
+                  flush=True)
+        elif args.skip_web_ui:
             print('\n[ALL READY] Managed AMR services running (Web UI disabled)', flush=True)
         else:
             ui_host = env.get('AMR_CAL_HOST', '192.168.0.35')
@@ -628,7 +692,7 @@ def main() -> int:
                     port = int(env.get('AMR_CAL_PORT', '8877'))
                     checks.append(('Calibration manager', f'http://{host}:{port}/status',
                                    lambda b: json.loads(b).get('ready') is True))
-                if not args.skip_imu:
+                if not args.skip_imu and not args.local_ros_only:
                     checks.append(('IMU WebSocket', None,
                                    lambda _: port_open('127.0.0.1', 8766)))
                 for label, url, test in checks:
