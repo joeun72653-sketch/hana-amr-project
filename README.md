@@ -234,3 +234,25 @@ pgrep -af 'amr_ws_to_ros|amr_ros_wheel_rpm_can|one_command_launch.py|lift_websoc
 | Windows `C:\amr_server\amr_server_8direction.py` | **아니오** | Windows 중계 서버 |
 
 > `fix_amr_normal_arm.py`는 실행 중인 Bridge 자체가 아니라, **기존 `amr_ws_to_ros_normal.py`에 수정 사항을 적용하는 패치 스크립트**입니다. 적용 전 로컬 원본을 백업하고 현재 내용이 일치하는지 확인하세요.
+
+## 11. 원격 네트워크를 사용하지 않는 One Command 실행
+
+`one_command_launch.py --local-ros-only`는 이 런처가 시작하는 프로세스에서
+**외부 LAN/NIC 통신을 사용하지 않고 같은 PC의 ROS2만 사용**할 때 선택합니다.
+
+```bash
+cd ~/hana-amr-github
+export PYTHONNOUSERSITE=1
+export ROS_DOMAIN_ID=31
+source /opt/ros/jazzy/setup.bash
+
+python3 -u one_command_launch.py --local-ros-only
+```
+
+- 유지: MicroStrain IMU 드라이버, `/imu/data`, RPY 변환 `/amr/imu/rpy`, 모터 자동 Enable, CANopen 및 ROS2 모터 토픽.
+- 미실행: HTML Web UI(8000), 보정 HTTP 서버(8877), Windows WebSocket 브리지(8765 연결), IMU WebSocket 서버(8766), 카메라 HTTP(8090).
+- DDS는 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`, 빈 `ROS_STATIC_PEERS` 및 저장소의 전용 Fast DDS/Cyclone DDS 설정으로 Linux 루프백(`lo`)에 제한합니다. 선택한 RMW가 두 종류 이외면 안전하게 시작을 거부합니다.
+- `--web-drive` 및 기존 프로세스에 의존하는 `--external-imu-driver`는 이 모드와 조합할 수 없습니다.
+- `--dry-run`을 붙여 시작 구성을 모터 접속 없이 확인할 수 있습니다.
+- **적용 범위는 이 런처가 시작한 프로세스뿐입니다.** 이미 실행 중인 ROS2 노드나 운영체제의 다른 프로그램 트래픽은 차단하지 않습니다. 독립 실행한 자율주행/센서 노드도 루프백 DDS 설정을 공유해야 LAN 사용이 없어집니다. 실제 외부 NIC 패킷 0건을 엄격히 보증하려면 네트워크 네임스페이스/방화벽 분리와 패킷 캡처 검증이 별도로 필요합니다.
+- 이 모드는 ROS2 통신만 로컬로 제한합니다. CAN 모터 구동 자체의 안전장치, 물리 비상정지, 주행권한 조건은 제거하지 않습니다.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Bind Cyclone DDS traffic to Linux loopback (lo), never to a LAN NIC. -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>
