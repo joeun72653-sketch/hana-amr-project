@@ -256,3 +256,42 @@ python3 -u one_command_launch.py --local-ros-only
 - `--dry-run`을 붙여 시작 구성을 모터 접속 없이 확인할 수 있습니다.
 - **적용 범위는 이 런처가 시작한 프로세스뿐입니다.** 이미 실행 중인 ROS2 노드나 운영체제의 다른 프로그램 트래픽은 차단하지 않습니다. 독립 실행한 자율주행/센서 노드도 루프백 DDS 설정을 공유해야 LAN 사용이 없어집니다. 실제 외부 NIC 패킷 0건을 엄격히 보증하려면 네트워크 네임스페이스/방화벽 분리와 패킷 캡처 검증이 별도로 필요합니다.
 - 이 모드는 ROS2 통신만 로컬로 제한합니다. CAN 모터 구동 자체의 안전장치, 물리 비상정지, 주행권한 조건은 제거하지 않습니다.
+
+
+## 12. 기존 AMR 실행·테스트 코드 목록 (Codex 분석용)
+
+> **정리 기준: 2026-10-31.** 이전 AMR 작업 대화에서 실행·테스트 대상으로 언급된 Python 파일 목록입니다. **GitHub 확인**은 이 문서 작성 시 `main` 브랜치에서 아래 기재한 경로의 파일을 직접 조회한 결과이며, **경로 미확인**은 지정 경로에서 찾지 못했다는 뜻입니다(IPC 로컬에 없다는 뜻은 아님). 실제 실행 이력 및 파일의 최신 버전은 IPC에서 별도로 확인해야 합니다.
+
+| 구분 | 실행·테스트 파일 (조회 경로) | 역할 | GitHub `main` 조회 결과 |
+| --- | --- | --- | --- |
+| 통합 실행 | `one_command_launch.py` | AMR 시스템 통합 실행 및 시작 구성 | **확인** |
+| CANopen | `amr_motor_control/amr_enable_motors.py` | 모터 Operation Enable | **확인** |
+| CANopen | `amr_motor_control/amr_keyboard_safe.py` | 안전 키보드 제어 및 초기화 로직 | **확인** |
+| CANopen | `amr_motor_control/amr_encoder_probe.py` | 엔코더 정보 확인 | 경로 미확인 |
+| ROS2·모터 | `amr_remote_client/amr_ros_wheel_rpm_can.py` | CANopen·ROS2 RPM 상태 연동 | **확인** |
+| ROS2·웹 | `amr_remote_client/amr_ws_to_ros.py` | WebSocket 주행 명령의 ROS2 연동 | **확인** |
+| ROS2·리프트 | `amr_remote_client/amr_ws_to_ros_lift.py` | 웹 주행과 리프트 연동 Bridge | **확인** |
+| 리프트 | `amr_lift/lift_status.py` | Modbus/RS-232 리프트 상태 조회 | 경로 미확인 |
+| 리프트 | `amr_lift/lift_down_limited.py` | 제한 범위 하강 테스트 | 경로 미확인 |
+| 리프트 | `amr_lift/lift_down_bottom.py` | 최하단 하강 테스트 | 경로 미확인 |
+| 리프트 | `amr_lift/lift_up_top.py` | 최상단 상승 테스트 | 경로 미확인 |
+| 리프트 | `amr_lift/lift_websocket.py` | 웹 기반 리프트 제어 및 인터록 연동 | **확인** |
+| 카메라 | `amr_websocket/amr_camera_mjpeg.py` | 카메라 MJPEG 스트리밍 | 경로 미확인 |
+| 객체인식 | `amr_websocket/amr_openvino_camera.py` | OpenVINO 기반 객체인식 | 경로 미확인 |
+| 객체인식·Depth | `amr_websocket/amr_openvino_camera_depth_integrated.py` | 객체인식 및 거리 측정 통합 | 경로 미확인 |
+| Depth | `amr_websocket/amr_depth_obstacle.py` | 거리 측정 및 근접 장애물 차단 보조 | 경로 미확인 |
+| Orbbec 테스트 | `amr_depth_test/test_orbbec_sdk.py` | Orbbec SDK RGB·Depth 실행 시험 | 경로 미확인 |
+| Orbbec 테스트 | `amr_depth_test/test_rgb_depth_640.py` | RGB·Depth 동시 출력 프로파일 테스트 | 경로 미확인 |
+
+### Codex 1차 코드 흐름·오류 분석 대상 (8개)
+
+1. `one_command_launch.py` — 통합 프로세스 시작 순서 및 종료 처리
+2. `amr_motor_control/amr_enable_motors.py` — CANopen Enable·SDO 응답 확인
+3. `amr_motor_control/amr_keyboard_safe.py` — DISARM·안전 정지 및 수동 제어
+4. `amr_remote_client/amr_ros_wheel_rpm_can.py` — RPM 수신·ROS2 상태 발행
+5. `amr_remote_client/amr_ws_to_ros_lift.py` — 웹 명령·주행·리프트 Bridge
+6. `amr_lift/lift_websocket.py` — Lift 인터록, RS-232 명령과 예외 처리
+7. `amr_websocket/amr_openvino_camera_depth_integrated.py` — 객체인식·Depth 통합판(지정 경로 미확인, 로컬 확인 필요)
+8. `amr_websocket/amr_depth_obstacle.py` — Depth 주행 차단 보조(지정 경로 미확인, 로컬 확인 필요)
+
+**분석 시 주의:** 이 목록을 코드 업로드 완료 목록이나 가동 보증 목록으로 간주하지 마세요. Codex로 분석할 때는 IPC에서 실제 사용 중인 파일과 실행 로그를 먼저 대조하고, 초기에 **읽기 전용**으로 파일 구조·호출 관계·통신·로그를 점검합니다. 실제 모터 구동, Lift 동작, 인터록 우회나 하드웨어 명령 실행은 분석 단계에서 수행하지 않습니다.
