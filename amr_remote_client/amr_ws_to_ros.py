@@ -45,6 +45,9 @@ STATE_TIMEOUT = 0.5
 PUBLISH_INTERVAL = 0.05
 HANDSHAKE_TIMEOUT = 2.0
 STOP_TIMEOUT = 5.0
+# Normal button release only, not emergency or safety STOP.
+SOFT_RELEASE_RATE_RPM_S = 400.0
+SOFT_RELEASE_MAX_SEC = 0.80
 COMMANDS = {'forward', 'reverse', 'left', 'right',
             'forward_left', 'forward_right', 'reverse_left', 'reverse_right'}
 
@@ -74,6 +77,7 @@ class AMRBridge(Node):
         self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
         self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
         self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
+        self.soft_pub = self.create_publisher(Bool, '/amr/soft_release_active', 10)
         self.lock = threading.RLock()
         self.motor_state = None
         self.state_at = None
@@ -89,6 +93,9 @@ class AMRBridge(Node):
         self.depth_blocked = True
         self.depth_at = None
         self.must_release = False
+        self.soft_release_started = None
+        self.soft_release_initial = 0.0
+        self.soft_release_sign = 1.0
         self.create_subscription(Bool, '/amr/depth_obstacle', self.on_depth, 10)
         self.create_subscription(String, '/amr_motor_state', self.on_state, 10)
         self.create_timer(PUBLISH_INTERVAL, self.control_tick)
@@ -176,12 +183,38 @@ class AMRBridge(Node):
             self.phase = 'RUNNING'
             return True
 
+    def normal_release(self):
+        # Only straight forward/reverse release can be softened.
+        s = self.state()
+        with self.lock:
+            cmd = self.requested
+            if (self.phase != 'RUNNING' or self.session is None or
+                    not self.is_ready(s) or
+                    not (cmd[0] == cmd[1] and cmd[0] != 0) or
+                    not self.lift_safe_for_drive() or
+                    (cmd[0] > 0 and self.depth_blocked_now())):
+                return False
+            applied = s.get('applied', [0, 0])
+            if not isinstance(applied, list) or len(applied) != 2:
+                return False
+            start = min(abs(cmd[0]), abs(applied[0]), abs(applied[1]))
+            if start <= 0:
+                return False
+            self.soft_release_initial = float(start)
+            self.soft_release_sign = 1.0 if cmd[0] > 0 else -1.0
+            self.soft_release_started = time.monotonic()
+            self.command_at = None
+            self.phase = 'SOFT_STOP'
+            return True
+
     def stop(self, disarm=False):
         state = self.state()
         with self.lock:
             previous_phase = self.phase
             self.requested = (0.0, 0.0)
             self.command_at = None
+            self.soft_release_started = None
+            self.soft_pub.publish(Bool(data=False))
             if disarm:
                 self.session = None
                 self.phase = 'DISARMED'
@@ -301,6 +334,25 @@ class AMRBridge(Node):
             # No left/right RPM messages at all while DISARMED.
             return
         s = self.state()
+        if phase == 'SOFT_STOP':
+            with self.lock:
+                start_time = self.soft_release_started
+                initial = self.soft_release_initial
+                sign = self.soft_release_sign
+            if (start_time is None or not self.is_ready(s) or
+                    not self.lift_safe_for_drive() or
+                    (sign > 0 and self.depth_blocked_now())):
+                self.stop(disarm=True)
+                return
+            elapsed = max(0.0, now - start_time)
+            remaining = max(0.0, initial - SOFT_RELEASE_RATE_RPM_S * elapsed)
+            if elapsed >= SOFT_RELEASE_MAX_SEC or remaining <= 0:
+                self.stop(disarm=False)
+                return
+            self.soft_pub.publish(Bool(data=True))
+            self.publish(sign * remaining, sign * remaining)
+            return
+        self.soft_pub.publish(Bool(data=False))
         if phase == 'RUNNING':
             if command_at is None or now - command_at >= COMMAND_TIMEOUT:
                 with self.lock:
@@ -432,6 +484,18 @@ async def run_bridge(bridge):
                         handshake_at = None
                         bridge.arm(token)
                         print('[ARM_READY] Session registered', flush=True)
+                        continue
+                    if kind == 'normal_release':
+                        if session is None or msg.get('session') != session:
+                            continue
+                        seq = msg.get('seq')
+                        if type(seq) is not int or seq <= last_seq:
+                            continue
+                        last_seq = seq
+                        if bridge.normal_release():
+                            print('[SOFT RELEASE] bounded decel begun', flush=True)
+                        else:
+                            bridge.stop(disarm=False)
                         continue
                     if kind == 'stop':
                         if session is None or msg.get('session') != session:
