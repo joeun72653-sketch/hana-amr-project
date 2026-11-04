@@ -12,6 +12,7 @@ The Python process cannot guarantee a physical stop after a CAN/link failure.
 
 import json
 import math
+import os
 import queue
 import sys
 import threading
@@ -23,7 +24,7 @@ CAN_BAUD = 115200
 # CANopen 0x60FF carries a signed 32-bit integer. This is a wire-format bound,
 # not a software speed limit or a verified safe mechanical speed.
 CANOPEN_INT32_MAX = (1 << 31) - 1
-BENCH_BYPASS_DISARM = True
+BENCH_BYPASS_DISARM = os.environ.get('AMR_BENCH_BYPASS_DISARM') == '1'
 COMMAND_TIMEOUT = 0.35
 AUTH_TIMEOUT = 0.5  # Web bridge must refresh explicit permission
 FEEDBACK_INTERVAL = 0.5
@@ -31,6 +32,12 @@ ENCODER_INTERVAL = 0.1
 STOP_TIMEOUT = 5.0
 NODE_FOR = {'left': 1, 'right': 2}  # verify physical wiring
 CAN_SIGN = {'left': -1, 'right': +1}  # preserves old 'forward': (-rpm, +rpm)
+
+# Software acceleration only. Normal slowdown and all stops retain existing behavior.
+ACCEL_ONLY_RPM_PER_SEC = 60.0
+DECEL_NONZERO_RPM_PER_SEC = 60.0  # Only nonzero-to-nonzero slowdown
+ACCEL_STEP_MAX_DT = 0.1
+ACCEL_WRITE_INTERVAL = 0.1
 
 
 def speed_payload(rpm):
@@ -59,6 +66,18 @@ class DualWheelState:
         self.shutdown = False
         self.auth_enabled = BENCH_BYPASS_DISARM
         self.auth_at = time.monotonic() if BENCH_BYPASS_DISARM else None
+        self.depth_blocked = True
+        self.depth_at = None
+
+    def depth_allowed_locked(self, now):
+        return (self.depth_at is not None and
+                0 <= now - self.depth_at < 0.35 and
+                not self.depth_blocked)
+
+    def update_depth(self, blocked):
+        with self.lock:
+            self.depth_blocked = bool(blocked)
+            self.depth_at = time.monotonic()
 
     def _latch(self, reason):
         # Called under self.lock. Force a NEW pair of zero messages.
@@ -190,10 +209,20 @@ class DualWheelState:
             now = time.monotonic()
         with self.lock:
             self._expire_locked(now)
-            allowed = self.armed and self.stop_verified and not self.fault and self._both_fresh_locked(now)
+            allowed = (self.armed and self.stop_verified and not self.fault
+                       and self._both_fresh_locked(now))
+            # forward_only_depth_gate: check ROS-side wheel commands, before
+            # applying physical CAN_SIGN motor polarity. Never gate reverse or
+            # pivot simply because one CAN motor has a positive signed RPM.
+            left = self.command['left']
+            right = self.command['right']
+            forward_request = (left >= 0 and right >= 0 and
+                               (left > 0 or right > 0))
+            if forward_request and not self.depth_allowed_locked(now):
+                allowed = False
             desired = (
-                CAN_SIGN['left'] * self.command['left'],
-                CAN_SIGN['right'] * self.command['right'],
+                CAN_SIGN['left'] * left,
+                CAN_SIGN['right'] * right,
             ) if allowed else (0, 0)
             return {
                 'desired': desired,
@@ -207,6 +236,7 @@ class DualWheelState:
                 'applied': self.applied,
                 'actual': self.actual,
                 'shutdown': self.shutdown,
+                'depth_blocked': not self.depth_allowed_locked(now),
             }
 
     def verify_stop_epoch(self, epoch):
@@ -241,6 +271,7 @@ class CanWorker(threading.Thread):
         self.stop_tracking_lock = threading.Lock()
         self.stop_verify_count = 0
         self.stop_verified_at = None
+        self.last_accel_write_at = [time.monotonic(), time.monotonic()]
 
     def _set_applied(self, value):
         self.applied = tuple(value)
@@ -340,7 +371,7 @@ class CanWorker(threading.Thread):
         can = None
         try:
             import serial
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'amr_motor_control'))
+            sys.path.insert(0, str(Path.home() / 'amr_motor_control'))
             from amr_keyboard_safe import UCan
 
             with serial.Serial(CAN_PORT, CAN_BAUD, timeout=0.02) as ser:
@@ -398,9 +429,31 @@ class CanWorker(threading.Thread):
                             if not fresh['stop_verified'] or fresh['desired'] != desired or fresh['epoch'] != s['epoch']:
                                 break
                             if rpm != self.applied[i]:
-                                self.write_speed(can, i + 1, rpm)
+                                previous = self.applied[i]
+                                command_rpm = rpm
+                                # Ramp speed increases and nonzero-to-nonzero decreases.
+                                # Never ramp toward ZERO: the original stop, obstacle,
+                                # disarm, stale-command and reverse paths remain intact.
+                                same_direction = (previous == 0 or
+                                                  (rpm > 0) == (previous > 0))
+                                increasing = (abs(rpm) > abs(previous) and same_direction)
+                                decreasing = (rpm != 0 and previous != 0 and
+                                              abs(rpm) < abs(previous) and same_direction)
+                                if increasing or decreasing:
+                                    now_step = time.monotonic()
+                                    elapsed = max(0.0, now_step - self.last_accel_write_at[i])
+                                    if elapsed < ACCEL_WRITE_INTERVAL:
+                                        continue  # Reduce CAN/SDO command traffic.
+                                    dt = min(ACCEL_STEP_MAX_DT, elapsed)
+                                    rate = (ACCEL_ONLY_RPM_PER_SEC if increasing
+                                            else DECEL_NONZERO_RPM_PER_SEC)
+                                    step = max(1, int(rate * dt))
+                                    command_rpm = previous + (1 if rpm > previous else -1) * min(
+                                        step, abs(rpm - previous))
+                                self.write_speed(can, i + 1, command_rpm)
+                                self.last_accel_write_at[i] = time.monotonic()
                                 next_applied = list(self.applied)
-                                next_applied[i] = rpm
+                                next_applied[i] = command_rpm
                                 self._set_applied(next_applied)
                     now = time.monotonic()
                     # CANopen 0x606C: actual motor-shaft RPM.
@@ -461,6 +514,8 @@ def main():
                                      lambda m: self.receive('right', m.data), 1)
             self.create_subscription(Bool, '/amr_motion_authorized',
                                      lambda m: state.authorize(m.data), 10)
+            self.create_subscription(Bool, '/amr/depth_obstacle',
+                                     lambda m: state.update_depth(m.data), 10)
             self.timeout_pub = self.create_publisher(Bool, 'rpm_topic_timeout', 10)
             self.state_pub = self.create_publisher(String, '/amr_motor_state', 10)
             self.encoder_pub = self.create_publisher(
@@ -506,6 +561,7 @@ def main():
                 'stop_epoch': s['epoch'],
                 'stop_verify_count': stop_count,
                 'stop_verified_at': stop_at,
+                'depth_blocked': s['depth_blocked'],
             }, ensure_ascii=False)))
             pulse = timeout_heartbeat(s['timeout_latched'], self.was_timeout_latched)
             if pulse is not None:
@@ -523,8 +579,6 @@ def main():
     node = WheelRpmNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
     finally:
         with state.lock:
             state.shutdown = True
@@ -535,7 +589,7 @@ def main():
         if worker.is_alive():
             print('[CRITICAL] CAN worker not stopped; use independent E-stop', flush=True)
         node.destroy_node()
-        rclpy.try_shutdown()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

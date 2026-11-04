@@ -2,12 +2,14 @@
 """AMR ROS2 Jazzy WebSocket bridge. 30-500 RPM bench request validation.
 
 Default mode publishes no nonzero RPM. --bench-motion is an explicit opt-in.
+Lift integration: publish motor interlock and block drive unless lift safely stopped.
 The CAN worker, driver comms-loss stop, and independent E-stop remain required.
 """
 import argparse
 import asyncio
 import json
 import math
+import os
 import threading
 import time
 from pathlib import Path
@@ -19,6 +21,21 @@ from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Bool, Float64, String
 
 CAL_FLAG = Path.home() / '.amr_calibration_active'
+LIFT_STATE_FILE = Path.home() / '.amr_lift_interlock.json'
+MOTOR_STATE_FILE = Path.home() / '.amr_motor_interlock.json'
+
+def _read_interlock(path):
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+def _write_interlock(path, data):
+    tmp = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, path)
+
 SERVER = 'ws://192.168.0.31:8765'
 MIN_REQUEST_RPM = 30.0
 MAX_REQUEST_RPM = 500.0
@@ -69,6 +86,10 @@ class AMRBridge(Node):
         self.stop_at = None
         self.stop_status_at = None
         self.fault_reason = None
+        self.depth_blocked = True
+        self.depth_at = None
+        self.must_release = False
+        self.create_subscription(Bool, '/amr/depth_obstacle', self.on_depth, 10)
         self.create_subscription(String, '/amr_motor_state', self.on_state, 10)
         self.create_timer(PUBLISH_INTERVAL, self.control_tick)
         self.get_logger().info('AMR bench bridge initialized')
@@ -83,6 +104,17 @@ class AMRBridge(Node):
         with self.lock:
             self.motor_state = state
             self.state_at = time.monotonic()
+
+    def on_depth(self, msg):
+        with self.lock:
+            self.depth_blocked = bool(msg.data)
+            self.depth_at = time.monotonic()
+
+    def depth_blocked_now(self):
+        with self.lock:
+            return (self.depth_at is None or
+                    time.monotonic() - self.depth_at > 0.35 or
+                    self.depth_blocked)
 
     def state(self):
         with self.lock:
@@ -117,6 +149,8 @@ class AMRBridge(Node):
         self.publish(0, 0)
 
     def arm(self, token):
+        if not self.lift_safe_for_drive():
+            return
         if CAL_FLAG.exists():
             print('[CAL] ARM ignored during calibration', flush=True)
             return
@@ -132,6 +166,8 @@ class AMRBridge(Node):
             self.phase = phase
 
     def request(self, left, right):
+        if not self.lift_safe_for_drive():
+            return False
         with self.lock:
             if self.session is None or self.phase not in ('ARMED_IDLE', 'RUNNING'):
                 return False
@@ -184,7 +220,52 @@ class AMRBridge(Node):
             return True, 'new_physical_stop_verified'
         return True, 'already_stopped_confirmed'
 
+    def lift_safe_for_drive(self):
+        # If a lift service has ever been started, a stale state FAILS CLOSED.
+        if not LIFT_STATE_FILE.exists():
+            return False  # Lift status missing: do not permit motion.
+        v = _read_interlock(LIFT_STATE_FILE)
+        return (v is not None and isinstance(v.get('time'), (int, float))
+                and 0 <= time.monotonic() - v['time'] < 0.6
+                and v.get('state') in ('IDLE', 'TOP', 'BOTTOM')
+                and v.get('verified_stopped') is True)
+
+    def publish_motor_interlock(self):
+        s = self.state()
+        with self.lock:
+            phase = self.phase
+            session = self.session
+        # The lift server requires a fresh physical stop verification, not just DISARMED.
+        if s is None:
+            reason = 'motor_state_missing_or_stale'
+        elif s.get('fault') is not False:
+            reason = 'motor_fault_or_unknown'
+        elif s.get('applied') != [0, 0] or s.get('actual') != [0, 0]:
+            reason = 'wheel_rpm_not_zero'
+        elif s.get('stop_verified') is not True:
+            reason = 'can_driver_stop_not_verified'
+        else:
+            reason = 'verified'
+        try:
+            _write_interlock(MOTOR_STATE_FILE, {
+                'time': time.monotonic(), 'phase': phase,
+                'session': session is not None,
+                'verified_stopped': self.is_stopped(s),
+                'calibration': CAL_FLAG.exists(),
+                'reason': reason,
+            })
+        except OSError as e:
+            self.get_logger().error('motor interlock write failed: ' + repr(e))
+            self.stop(disarm=True)
+
     def control_tick(self):
+        self.publish_motor_interlock()
+        if not self.lift_safe_for_drive():
+            with self.lock:
+                running_or_armed = self.phase != 'DISARMED'
+            if running_or_armed:
+                self.stop(disarm=True)
+            return
         # Calibration owns motor-command publishing while this flag exists.
         if CAL_FLAG.exists():
             with self.lock:
@@ -231,6 +312,16 @@ class AMRBridge(Node):
                     self.fault_reason = 'motor_not_ready_or_stale'
                 self.stop(disarm=True)
                 return
+            # Forward and forward-diagonal motion only: both wheel RPMs are
+            # nonnegative, with at least one wheel requesting motion.
+            forward_request = (requested[0] >= 0 and requested[1] >= 0
+                               and (requested[0] > 0 or requested[1] > 0))
+            if forward_request and self.depth_blocked_now():
+                with self.lock:
+                    self.must_release = True
+                self.stop(disarm=False)
+                print('[OBSTACLE] Forward blocked; ARM retained', flush=True)
+                return
             if self.bench_motion and session is not None:
                 self.publish(*requested)
                 return
@@ -254,7 +345,7 @@ async def run_bridge(bridge):
         last_ready_report = 0.0
         bridge.stop(disarm=True)
         try:
-            async with websockets.connect(SERVER, ping_interval=10, ping_timeout=10) as ws:
+            async with websockets.connect(SERVER, ping_interval=2, ping_timeout=2) as ws:
                 await send(ws, {'role': 'robot'})
                 hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
                 if hello.get('role') != 'robot' or hello.get('status') != 'connected':
@@ -329,6 +420,9 @@ async def run_bridge(bridge):
                         print('[DISARM]', msg.get('reason'), flush=True)
                         continue
                     if kind == 'arm':
+                        if not bridge.lift_safe_for_drive():
+                            await send(ws, {'kind': 'fault', 'reason': 'lift_interlock'})
+                            continue
                         token = msg.get('session')
                         if not isinstance(token, str) or len(token) != 32:
                             continue
@@ -342,12 +436,20 @@ async def run_bridge(bridge):
                     if kind == 'stop':
                         if session is None or msg.get('session') != session:
                             continue
+                        # A button/key release is required before motion may restart.
+                        with bridge.lock:
+                            bridge.must_release = False
                         seq = msg.get('seq')
                         if type(seq) is not int or seq <= last_seq:
                             continue
                         last_seq = seq
                         bridge.stop(disarm=False)
                         print('[STOPPING] Zero requested', flush=True)
+                        continue
+                    if not bridge.lift_safe_for_drive():
+                        bridge.stop(disarm=True)
+                        session = None
+                        await send(ws, {'kind': 'fault', 'reason': 'lift_interlock'})
                         continue
                     if kind != 'drive_request' or session is None or msg.get('session') != session:
                         continue
@@ -387,6 +489,17 @@ async def run_bridge(bridge):
                         continue
                     if phase not in ('ARMED_IDLE', 'RUNNING'):
                         continue
+                    # Depth limits forward commands only. Reverse, pivots and
+                    # reverse diagonals remain available once the previous
+                    # stop has completed and a new key press is received.
+                    forward_command = command in ('forward', 'forward_left', 'forward_right')
+                    if forward_command and bridge.depth_blocked_now():
+                        with bridge.lock:
+                            bridge.must_release = True
+                        continue
+                    with bridge.lock:
+                        if bridge.must_release:
+                            continue
                     if msg.get('motion_allowed') is not True or not bridge.bench_motion:
                         if phase == 'RUNNING':
                             bridge.stop(disarm=True)
