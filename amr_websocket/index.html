@@ -113,7 +113,7 @@ function keyCommand(){const w=heldKeys.has('w'),s=heldKeys.has('s'),a=heldKeys.h
 function stopTransmission(){if(intervalId!==null){clearInterval(intervalId);intervalId=null;}current=null;buttons.forEach(b=>b.classList.remove('active'));}
 function setMotion(cmd){if(calibrationActive||!armed||!registered||!motorReady||!ws||ws.readyState!==WebSocket.OPEN)cmd=null;if(cmd===current)return;if(current!==null){stopTransmission();send({kind:'command',command:'stop'});return;}if(cmd===null)return;current=cmd;buttons.forEach(b=>b.classList.toggle('active',b.dataset.drive===cmd));send({kind:'command',command:cmd,rpm:rpm()});intervalId=setInterval(()=>{if(current&&armed&&registered&&motorReady&&document.visibilityState==='visible')send({kind:'command',command:current,rpm:rpm()});},80);}
 function reconcile(){setMotion(pointerCommand||keyCommand());}
-function releaseAll(){pointerCommand=null;pointerId=null;heldKeys.clear();if(current!==null){stopTransmission();send({kind:'command',command:'stop'});}else{stopTransmission();}}
+function releaseAll(normal=false){pointerCommand=null;pointerId=null;heldKeys.clear();if(current!==null){const old=current;stopTransmission();const gentle=normal&&(old==='forward'||old==='reverse')&&armed&&registered&&motorReady&&ws?.readyState===WebSocket.OPEN&&document.visibilityState==='visible'&&!calibrationActive;send({kind:'command',command:gentle?'release':'stop'});}else{stopTransmission();}}
 // Reconnect only with all motion input released. NEVER auto-arm after reconnect.
 let motorRetryTimer=null;
 function setMotorConnection(label,level){
@@ -181,9 +181,9 @@ $('motorReconnect').addEventListener('click',()=>{
 $('arm').addEventListener('click',()=>send({kind:'arm'}));
 $('disarm').addEventListener('click',()=>{releaseAll();send({kind:'disarm'});});
 $('stop').addEventListener('click',()=>{releaseAll();send({kind:'command',command:'stop'});});
-buttons.forEach(b=>{b.addEventListener('pointerdown',e=>{if(b.disabled)return;e.preventDefault();pointerId=e.pointerId;pointerCommand=b.dataset.drive;try{b.setPointerCapture(e.pointerId);}catch{}reconcile();});const release=e=>{if(pointerId===e.pointerId){pointerId=null;pointerCommand=null;releaseAll();}};b.addEventListener('pointerup',release);b.addEventListener('pointercancel',release);b.addEventListener('lostpointercapture',()=>{if(pointerCommand===b.dataset.drive)releaseAll();});});
+buttons.forEach(b=>{b.addEventListener('pointerdown',e=>{if(b.disabled)return;e.preventDefault();pointerId=e.pointerId;pointerCommand=b.dataset.drive;try{b.setPointerCapture(e.pointerId);}catch{}reconcile();});const release=e=>{if(pointerId===e.pointerId){pointerId=null;pointerCommand=null;releaseAll(e.type==='pointerup');}};b.addEventListener('pointerup',release);b.addEventListener('pointercancel',release);b.addEventListener('lostpointercapture',()=>{if(pointerCommand===b.dataset.drive)releaseAll();});});
 window.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;const k=e.key.toLowerCase();if(k==='q'||k===' '){e.preventDefault();releaseAll();send({kind:'command',command:'stop'});return;}if(['w','a','s','d'].includes(k)){e.preventDefault();heldKeys.add(k);reconcile();}});
-window.addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(['w','a','s','d'].includes(k)){heldKeys.delete(k);reconcile();if(!heldKeys.size&&!pointerCommand)releaseAll();}});
+window.addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(['w','a','s','d'].includes(k)){heldKeys.delete(k);if(!heldKeys.size&&!pointerCommand){releaseAll(true);}else{reconcile();}}});
 window.addEventListener('blur',releaseAll);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseAll();});
 window.addEventListener('pagehide',releaseAll);
