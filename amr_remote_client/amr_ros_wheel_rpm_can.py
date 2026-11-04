@@ -36,6 +36,8 @@ CAN_SIGN = {'left': -1, 'right': +1}  # preserves old 'forward': (-rpm, +rpm)
 # Software acceleration only. Normal slowdown and all stops retain existing behavior.
 ACCEL_ONLY_RPM_PER_SEC = 60.0
 DECEL_NONZERO_RPM_PER_SEC = 60.0  # Only nonzero-to-nonzero slowdown
+SOFT_RELEASE_RATE_RPM_S = 400.0
+SOFT_RELEASE_FLAG_TTL = 0.20
 ACCEL_STEP_MAX_DT = 0.1
 ACCEL_WRITE_INTERVAL = 0.1
 
@@ -68,11 +70,18 @@ class DualWheelState:
         self.auth_at = time.monotonic() if BENCH_BYPASS_DISARM else None
         self.depth_blocked = True
         self.depth_at = None
+        self.soft_release_at = None
+        self.soft_release_enabled = False
 
     def depth_allowed_locked(self, now):
         return (self.depth_at is not None and
                 0 <= now - self.depth_at < 0.35 and
                 not self.depth_blocked)
+
+    def update_soft_release(self, enabled):
+        with self.lock:
+            self.soft_release_enabled = bool(enabled)
+            self.soft_release_at = time.monotonic()
 
     def update_depth(self, blocked):
         with self.lock:
@@ -237,6 +246,9 @@ class DualWheelState:
                 'actual': self.actual,
                 'shutdown': self.shutdown,
                 'depth_blocked': not self.depth_allowed_locked(now),
+                'soft_release': (self.soft_release_enabled and
+                                 self.soft_release_at is not None and
+                                 0 <= now-self.soft_release_at < SOFT_RELEASE_FLAG_TTL),
             }
 
     def verify_stop_epoch(self, epoch):
@@ -446,7 +458,9 @@ class CanWorker(threading.Thread):
                                         continue  # Reduce CAN/SDO command traffic.
                                     dt = min(ACCEL_STEP_MAX_DT, elapsed)
                                     rate = (ACCEL_ONLY_RPM_PER_SEC if increasing
-                                            else DECEL_NONZERO_RPM_PER_SEC)
+                                            else (SOFT_RELEASE_RATE_RPM_S
+                                                  if fresh['soft_release']
+                                                  else DECEL_NONZERO_RPM_PER_SEC))
                                     step = max(1, int(rate * dt))
                                     command_rpm = previous + (1 if rpm > previous else -1) * min(
                                         step, abs(rpm - previous))
@@ -516,6 +530,8 @@ def main():
                                      lambda m: state.authorize(m.data), 10)
             self.create_subscription(Bool, '/amr/depth_obstacle',
                                      lambda m: state.update_depth(m.data), 10)
+            self.create_subscription(Bool, '/amr/soft_release_active',
+                                     lambda m: state.update_soft_release(m.data), 10)
             self.timeout_pub = self.create_publisher(Bool, 'rpm_topic_timeout', 10)
             self.state_pub = self.create_publisher(String, '/amr_motor_state', 10)
             self.encoder_pub = self.create_publisher(
