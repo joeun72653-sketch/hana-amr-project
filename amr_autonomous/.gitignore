@@ -1,0 +1,5 @@
+# Local IPC originals may contain hardware/network identifiers and credentials.
+.ipc_src_review/
+__pycache__/
+*.pyc
+*.log
