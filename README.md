@@ -1,3 +1,5 @@
+> **AMR_QR 자율주행 준비 브랜치 안내 (2026-11-05)**: [전체 실행 명령어](amr_autonomous/docs/AMR_QR_COMMANDS.md) · [준비 가이드](amr_autonomous/README.md) · [IPC 원본 코드 현황](amr_autonomous/docs/IPC_SOURCE_MANIFEST.md). 안전 확인 전에는 구동 명령을 실행하지 마세요.
+
 # HANA AMR — 실행 명령어 및 운영 가이드
 
 Ubuntu ROS 2 Jazzy 기반 AMR의 **CANopen 모터, Windows WebSocket, 웹 관제, IMU, Lift, 카메라** 실행 순서를 정리한 문서입니다.
