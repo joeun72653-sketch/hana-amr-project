@@ -54,8 +54,10 @@ class AMRBridge(Node):
         super().__init__('amr_ws_to_ros')
         self.bench_motion = bench_motion
         self.calibration_hold = False
-        self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
-        self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
+        # DISARMED must remove the DDS publisher endpoints, not merely skip
+        # publish(). Independent docking refuses any competing RPM publisher.
+        self.left_pub = None
+        self.right_pub = None
         self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
         self.lock = threading.RLock()
         self.motor_state = None
@@ -105,10 +107,42 @@ class AMRBridge(Node):
                 and s.get('timeout_latched') is False
                 and s.get('status') == 'ARMED')
 
+    def enable_wheel_publishers(self):
+        """Register final RPM endpoints only while a web ARM session exists.
+
+        Caller holds self.lock so a simultaneous DISARM cannot race creation.
+        """
+        if self.left_pub is not None:
+            return
+        left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
+        try:
+            right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
+        except Exception:
+            self.destroy_publisher(left_pub)
+            raise
+        self.left_pub = left_pub
+        self.right_pub = right_pub
+        self.get_logger().info('Web ARM: wheel RPM publishers registered')
+
+    def disable_wheel_publishers(self):
+        """Remove both DDS RPM endpoints after Web disauthorization.
+
+        This is not a motor stop mechanism; the CAN worker handles the
+        authorization falling edge and verifies the physical zero stop.
+        """
+        if self.left_pub is None:
+            return
+        self.destroy_publisher(self.left_pub)
+        self.destroy_publisher(self.right_pub)
+        self.left_pub = None
+        self.right_pub = None
+        self.get_logger().info('Web DISARM: wheel RPM publishers released')
+
     def publish(self, left, right):
         # Keep RPM publication ordered against DISARM under the same lock.
         with self.lock:
-            if CAL_FLAG.exists() or self.session is None or self.phase == 'DISARMED':
+            if (CAL_FLAG.exists() or self.session is None
+                    or self.phase == 'DISARMED' or self.left_pub is None):
                 return
             self.left_pub.publish(Float64(data=float(left)))
             self.right_pub.publish(Float64(data=float(right)))
@@ -121,6 +155,10 @@ class AMRBridge(Node):
             print('[CAL] ARM ignored during calibration', flush=True)
             return
         with self.lock:
+            if CAL_FLAG.exists():
+                print('[CAL] ARM ignored during calibration', flush=True)
+                return
+            self.enable_wheel_publishers()
             self.session = token
             self.phase = 'ARM_READY'
             self.requested = (0.0, 0.0)
@@ -150,6 +188,7 @@ class AMRBridge(Node):
                 self.session = None
                 self.phase = 'DISARMED'
                 self.auth_pub.publish(Bool(data=False))
+                self.disable_wheel_publishers()
             else:
                 self.phase = 'STOPPING'
                 self.stop_at = time.monotonic()
@@ -198,6 +237,7 @@ class AMRBridge(Node):
                           flush=True)
                 # Deauthorize the Web bridge; do not send wheel RPM zeros.
                 self.auth_pub.publish(Bool(data=False))
+                self.disable_wheel_publishers()
             return
 
         with self.lock:
