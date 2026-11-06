@@ -105,7 +105,8 @@ $('plan').onclick=async()=>{
 };
 async function poll(){
  try{await refreshMap(); const s=await(await fetch('/api/status',{cache:'no-store'})).json();
- robot=s.pose;const oldPose=s.pose_stale===true; $('pose').textContent=robot?'AMR '+(oldPose?'마지막 위치 (갱신 중단): ':'현재 위치: ')+'X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m'+(oldPose?' · 주행 전 위치 재확인 필요':''):'AMR 현재 위치: AMCL 데이터 대기';
+ robot=s.pose;const pending=s.pose_source==='initialpose_pending_amcl',oldPose=s.pose_stale===true;
+ $('pose').textContent=robot?(pending?'RViz 지정 초기 위치 (AMCL 검증 대기): ':oldPose?'AMR 마지막 위치 (갱신 중단): ':'AMR 현재 추정 위치: ')+'X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m'+(oldPose?' · 주행 전 위치 재확인 필요':''):'AMR 현재 위치: AMCL 데이터 대기';
  $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';paint();
  }catch(e){$('connection').textContent='연결 오류';$('status').textContent='서버 확인: '+e.message}
 }
