@@ -88,7 +88,7 @@ class MapNode(Node):
         self.preview = []
         self.selected_mode = "MANUAL"
         # An operator-requested maximum; NOT an approved physical motor limit.
-        self.auto_rpm_request_max = 60
+        self.auto_rpm_request_max = 30
         self.arrival_lift_plan = {"mode": "none", "pulse": None}
         self.target = None
         map_qos = QoSProfile(depth=1,
