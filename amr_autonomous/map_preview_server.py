@@ -18,7 +18,8 @@ from urllib.parse import urlparse
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import ComputePathToPose
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path as NavPath
+from visualization_msgs.msg import Marker
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -101,6 +102,16 @@ class MapNode(Node):
                                  QoSProfile(depth=10,
                                             reliability=ReliabilityPolicy.RELIABLE,
                                             durability=DurabilityPolicy.VOLATILE))
+        # Visualization-only topics for RViz, never /goal_pose or /cmd_vel.
+        # Transient local keeps the most recent preview visible when RViz
+        # subscribes after the web operator planned a path.
+        preview_qos = QoSProfile(depth=1,
+                                 reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.preview_path_pub = self.create_publisher(
+            NavPath, "/amr_web/preview_path", preview_qos)
+        self.preview_goal_pub = self.create_publisher(
+            Marker, "/amr_web/preview_goal", preview_qos)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
 
     def map_callback(self, message):
@@ -125,6 +136,42 @@ class MapNode(Node):
             self.initial_pose_at = time.monotonic()
             # Previously previewed route used an older localization origin.
             self.preview = []
+            self.target = None
+        self.clear_rviz_preview()
+
+    def clear_rviz_preview(self):
+        empty = NavPath()
+        empty.header.frame_id = "map"
+        empty.header.stamp = self.get_clock().now().to_msg()
+        self.preview_path_pub.publish(empty)
+        delete = Marker()
+        delete.header = empty.header
+        delete.ns = "amr_web_preview"
+        delete.id = 0
+        delete.action = Marker.DELETE
+        self.preview_goal_pub.publish(delete)
+
+    def publish_rviz_preview(self, path, target):
+        # Keep the Nav2 planned pose sequence and orientation exactly as
+        # returned by ComputePathToPose, with an explicit map frame.
+        path.header.frame_id = "map"
+        self.preview_path_pub.publish(path)
+        arrow = Marker()
+        arrow.header.frame_id = "map"
+        arrow.header.stamp = self.get_clock().now().to_msg()
+        arrow.ns = "amr_web_preview"
+        arrow.id = 0
+        arrow.type = Marker.ARROW
+        arrow.action = Marker.ADD
+        arrow.pose = target.pose
+        arrow.scale.x = 0.45
+        arrow.scale.y = 0.12
+        arrow.scale.z = 0.12
+        arrow.color.r = 0.9
+        arrow.color.g = 0.2
+        arrow.color.b = 0.2
+        arrow.color.a = 1.0
+        self.preview_goal_pub.publish(arrow)
 
     def map_data(self):
         with self.lock:
@@ -224,6 +271,7 @@ class MapNode(Node):
             self.preview = poses
             self.target = {"x": x, "y": y, "yaw_deg": a}
             self.arrival_lift_plan = arrival
+        self.publish_rviz_preview(result.result.path, target)
         return {"path": poses, "destination": self.target,
                 "arrival_lift_plan": arrival,
                 "preview_start": start_pose,
