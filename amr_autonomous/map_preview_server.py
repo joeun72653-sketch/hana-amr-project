@@ -17,10 +17,12 @@ from urllib.parse import urlparse
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
-from nav2_msgs.action import ComputePathToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Path as NavPath
 from visualization_msgs.msg import Marker
-from std_msgs.msg import String, Float64
+from std_msgs.msg import String, Float64, Bool
+from tf2_ros import Buffer, TransformListener
+from rclpy.time import Time
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -76,9 +78,23 @@ def wait_future(future, timeout):
 
 
 class MapNode(Node):
-    def __init__(self):
+    def __init__(self, allow_physical_auto=False):
         super().__init__("amr_qr_map_preview")
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.allow_physical_auto = bool(allow_physical_auto)
+        self.auto_active = False
+        self.auto_handle = None
+        self.auto_started = None
+        self.auto_heartbeat_at = None
+        self.auto_state = "IDLE"
+        self.auto_failure = None
+        self.auto_distance = None
+        self.motor_state = None
+        self.motor_at = None
+        self.depth_blocked = True
+        self.depth_at = None
+        self.mux_state = None
+        self.mux_at = None
         self.grid = None
         self.pose = None
         self.pose_at = None
@@ -127,6 +143,44 @@ class MapNode(Node):
         self.create_subscription(PoseStamped, "/amr_web/rviz_goal_request",
                                  self.on_rviz_preview_goal, 10)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
+        self.navigator = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+        self.auto_heartbeat_pub = self.create_publisher(
+            Bool, "/amr_auto/navigation_active", 10)
+        self.create_subscription(String, "/amr_motor_state",
+                                 self.on_motor_state, 10)
+        self.create_subscription(String, "/amr_mux/status",
+                                 self.on_mux_status, 10)
+        self.create_subscription(Bool, "/amr/depth_obstacle",
+                                 self.on_depth_state, 10)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self,
+                                              spin_thread=False)
+        self.create_timer(0.05, self.auto_tick)
+
+    def on_motor_state(self, message):
+        try:
+            data = json.loads(message.data)
+        except (ValueError, TypeError):
+            return
+        if isinstance(data, dict):
+            with self.lock:
+                self.motor_state = data
+                self.motor_at = time.monotonic()
+
+    def on_mux_status(self, message):
+        try:
+            data = json.loads(message.data)
+        except (ValueError, TypeError):
+            return
+        if isinstance(data, dict):
+            with self.lock:
+                self.mux_state = data
+                self.mux_at = time.monotonic()
+
+    def on_depth_state(self, message):
+        with self.lock:
+            self.depth_blocked = message.data is not False
+            self.depth_at = time.monotonic()
 
     def map_callback(self, message):
         with self.lock:
