@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Configure and activate existing Map Server + AMCL (not motor control).
+"""Race-tolerant startup of Map Server and AMCL lifecycle nodes (no motor commands).
 
-Waits for lifecycle services; aborts on unexpected state or timeout.
-Requires source /opt/ros/jazzy/setup.bash and ~/real_amr/install/setup.bash.
+A Nav2 lifecycle manager may already be configuring the map_server. Handle
+intermediate states and rejected duplicate transitions by re-reading state.
+Never assume that a successful service call means the target has reached ACTIVE.
 """
 import argparse
 import sys
@@ -16,64 +17,97 @@ from rclpy.node import Node
 ACTIVE = State.PRIMARY_STATE_ACTIVE
 INACTIVE = State.PRIMARY_STATE_INACTIVE
 UNCONFIGURED = State.PRIMARY_STATE_UNCONFIGURED
+TRANSIENT = {
+    State.TRANSITION_STATE_CONFIGURING,
+    State.TRANSITION_STATE_CLEANINGUP,
+    State.TRANSITION_STATE_SHUTTINGDOWN,
+    State.TRANSITION_STATE_ACTIVATING,
+    State.TRANSITION_STATE_DEACTIVATING,
+}
+ERROR = State.TRANSITION_STATE_ERRORPROCESSING
+FINAL = State.PRIMARY_STATE_FINALIZED
 
 
-def request(node, client, request_type, value=None, timeout=4.0):
-    req = request_type.Request()
-    if value is not None:
-        req.transition.id = value
-    future = client.call_async(req)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
+def send(node, client, request, deadline, label):
+    future = client.call_async(request)
+    # Use bounded ROS spinning and never issue an overlapping request.
+    limit = min(deadline, time.monotonic() + 8.0)
+    while not future.done() and time.monotonic() < limit:
+        rclpy.spin_once(node, timeout_sec=0.1)
     if not future.done():
-        raise TimeoutError("Lifecycle service call timeout")
+        client.remove_pending_request(future)
+        raise TimeoutError(f"{label}: lifecycle service timeout")
     result = future.result()
     if result is None:
-        raise RuntimeError("Lifecycle service call returned no result")
+        raise RuntimeError(f"{label}: lifecycle service returned no result")
     return result
 
 
 def activate(node, name, deadline):
-    status = node.create_client(GetState, name + "/get_state")
-    change = node.create_client(ChangeState, name + "/change_state")
+    state_client = node.create_client(GetState, name + "/get_state")
+    change_client = node.create_client(ChangeState, name + "/change_state")
+    last = None
     try:
         while time.monotonic() < deadline:
-            if status.wait_for_service(timeout_sec=0.5) and change.wait_for_service(timeout_sec=0.5):
-                break
-        else:
-            raise TimeoutError(name + " lifecycle services unavailable")
-        while time.monotonic() < deadline:
-            state = request(node, status, GetState).current_state.id
-            if state == ACTIVE:
-                print("[LIFECYCLE]", name, "already active", flush=True)
+            if not (state_client.wait_for_service(timeout_sec=0.5)
+                    and change_client.wait_for_service(timeout_sec=0.5)):
+                continue
+            try:
+                current = send(node, state_client, GetState.Request(), deadline, name).current_state.id
+            except TimeoutError:
+                time.sleep(0.25)
+                continue
+            if current == ACTIVE:
+                print(f"[LIFECYCLE] {name}: ACTIVE", flush=True)
                 return
-            if state == UNCONFIGURED:
-                transition = Transition.TRANSITION_CONFIGURE
-            elif state == INACTIVE:
-                transition = Transition.TRANSITION_ACTIVATE
+            if current in (ERROR, FINAL):
+                raise RuntimeError(f"{name}: entered error/final state {current}")
+            if current in TRANSIENT:
+                # The node is already transitioning; NEVER issue a competing change_state.
+                if current != last:
+                    print(f"[LIFECYCLE] {name}: transitioning ({current}), waiting", flush=True)
+                last = current
+                time.sleep(0.25)
+                continue
+            if current not in (UNCONFIGURED, INACTIVE):
+                raise RuntimeError(f"{name}: unexpected lifecycle state {current}")
+            action = (Transition.TRANSITION_CONFIGURE if current == UNCONFIGURED
+                      else Transition.TRANSITION_ACTIVATE)
+            req = ChangeState.Request()
+            req.transition.id = action
+            try:
+                response = send(node, change_client, req, deadline, name)
+            except TimeoutError:
+                # Recheck after a service delay; do not assume failure or success.
+                time.sleep(0.25)
+                continue
+            if not response.success:
+                # Another lifecycle manager may have won the race. Re-read state.
+                print(f"[LIFECYCLE] {name}: transition {action} rejected; "
+                      "rechecking state instead of aborting", flush=True)
+                time.sleep(0.5)
             else:
-                # Transitional/error states should be handled by their owner.
-                raise RuntimeError(f"{name} unexpected lifecycle state={state}")
-            if not request(node, change, ChangeState, transition).success:
-                raise RuntimeError(f"{name} transition {transition} rejected")
-        raise TimeoutError(name + " not active before timeout")
+                print(f"[LIFECYCLE] {name}: transition {action} accepted", flush=True)
+                time.sleep(0.2)
+        raise TimeoutError(f"{name}: not ACTIVE within startup deadline")
     finally:
-        node.destroy_client(status)
-        node.destroy_client(change)
+        node.destroy_client(state_client)
+        node.destroy_client(change_client)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args()
-    if not 1 <= args.timeout <= 180:
-        parser.error("--timeout must be 1..180 seconds")
+    if not 10 <= args.timeout <= 180:
+        parser.error("--timeout must be 10..180 seconds")
     rclpy.init()
     node = Node("amr_map_amcl_lifecycle_starter")
     try:
         deadline = time.monotonic() + args.timeout
         activate(node, "/map_server", deadline)
         activate(node, "/amcl", deadline)
-        print("[LIFECYCLE] map_server and amcl ACTIVE", flush=True)
+        print("[LIFECYCLE READY] map_server and amcl ACTIVE", flush=True)
     except Exception as error:
         print(f"[LIFECYCLE ERROR] {error}", file=sys.stderr, flush=True)
         sys.exit(1)
