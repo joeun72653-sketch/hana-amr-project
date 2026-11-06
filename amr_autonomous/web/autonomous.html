@@ -111,6 +111,11 @@ $('autoStart').onclick=async()=>{
  }catch(err){$('autoDriveStatus').textContent='AUTO 시작 거부: '+err.message;}
 };
 $('autoStop').onclick=()=>stopAutonomous();
+window.addEventListener('message',event=>{
+ const parentOrigin=location.protocol+'//'+location.hostname+':8000';
+ if(event.origin!==parentOrigin||!event.data||event.data.type!=='AMR_AUTO_STOP')return;
+ stopAutonomous('상위 관제 STOP/DISARM 요청');
+});
 window.addEventListener('pagehide',()=>{if(autoRunning)stopAutonomous('페이지 종료로 AUTO 중지 요청');});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&autoRunning)stopAutonomous('화면 비활성으로 AUTO 중지 요청');});
 $('autoRpmSave').onclick=async()=>{
