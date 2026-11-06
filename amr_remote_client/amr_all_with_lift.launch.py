@@ -26,6 +26,7 @@ CAMERA = HOME / 'amr_websocket'
 SYSTEM_PYTHON = '/usr/bin/python3'
 CAMERA_PYTHON = str(HOME / 'yolo_openvino_env' / 'bin' / 'python')
 LIFT = HOME / 'amr_lift'
+AUTONOMOUS = HOME / 'hana-amr-project-autonomous' / 'amr_autonomous'
 LIFT_PYTHON = str(LIFT / '.venv' / 'bin' / 'python')
 
 
@@ -43,6 +44,7 @@ def make_process(label, python, script, extra=None, condition=None):
 
 def generate_launch_description():
     bench_motion = LaunchConfiguration('bench_motion')
+    with_map_preview = LaunchConfiguration('with_map_preview')
 
     can = make_process('can_motor', SYSTEM_PYTHON,
                        REMOTE / 'amr_ros_wheel_rpm_can.py')
@@ -57,6 +59,19 @@ def generate_launch_description():
         'web_drive_no_ramp', SYSTEM_PYTHON,
         REMOTE / 'amr_ws_to_ros.py', ['--bench-motion'],
         condition=IfCondition(bench_motion))
+
+    # Optional, preview-only map and command-state diagnostics.
+    # Does NOT issue NavigateToPose or send motor RPM; uses a second HTTP port.
+    from launch.conditions import IfCondition
+    map_preview = make_process(
+        'map_preview', SYSTEM_PYTHON,
+        AUTONOMOUS / 'map_preview_server.py',
+        ['--bind', '0.0.0.0', '--port', '8771'],
+        condition=IfCondition(with_map_preview))
+    mux_diagnostic = make_process(
+        'mode_mux_dry_run', SYSTEM_PYTHON,
+        AUTONOMOUS / 'scripts' / 'mode_mux_dry_run.py',
+        condition=IfCondition(with_map_preview))
 
     camera = make_process('openvino_depth', CAMERA_PYTHON,
                           CAMERA / 'amr_openvino_camera_depth_integrated.py')
@@ -75,6 +90,8 @@ def generate_launch_description():
     )
 
     actions = [
+        DeclareLaunchArgument('with_map_preview', default_value='false',
+                              description='Optional embedded phone map and dry-run mode observer, NO AUTO motor control'),
         DeclareLaunchArgument('bench_motion', default_value='false',
                               description='Explicit opt-in: bench_motion:=true enables nonzero wheel RPM'),
         LogInfo(msg=['[AMR] bench_motion=', bench_motion,
@@ -87,10 +104,12 @@ def generate_launch_description():
         TimerAction(period=2.0, actions=[camera]),
         TimerAction(period=4.0, actions=[bridge_diag, bridge_bench]),
         TimerAction(period=6.0, actions=[lift]),
+        TimerAction(period=8.0, actions=[map_preview, mux_diagnostic]),
     ]
     for process, label in ((can, 'CAN motor'), (camera, 'OpenVINO/Depth'),
                            (http_server, 'HTTP server'),
-                           (bridge_diag, 'Web drive'), (bridge_bench, 'Web drive')):
+                           (bridge_diag, 'Web drive'), (bridge_bench, 'Web drive'),
+                           (map_preview, 'Map preview'), (mux_diagnostic, 'Mode diagnostic')):
         actions.append(RegisterEventHandler(OnProcessExit(
             target_action=process,
             on_exit=[EmitEvent(event=Shutdown(reason=f'{label} process exited'))],
