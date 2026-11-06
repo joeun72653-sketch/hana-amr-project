@@ -90,14 +90,14 @@
 <section class="panel" id="autonomousMapPanel" style="max-width:1400px;margin:0 auto 16px">
   <div class="status-row" style="gap:10px;flex-wrap:wrap">
     <div><h2 style="margin:0 0 5px">AMR 지도 · 목적지 · 경로 미리보기</h2>
-    <p class="info" style="margin:0">기존 웹에서 지도를 열어 목적지를 지정하면 RViz에도 같은 경로가 표시됩니다. MANUAL/AUTO 버튼은 진단용이며 실제 AUTO 구동은 연결되지 않았습니다.</p></div>
+    <p class="info" style="margin:0">휴대폰에서 목적지를 선택하면 RViz에도 경로가 표시됩니다. 실구동 Launch에서는 지도 내부의 AUTO 시작/중지 버튼으로 Nav2 목표 주행을 실행합니다.</p></div>
     <button type="button" id="mapOpen" style="padding:10px 16px;min-width:130px">지도 열기 / 닫기</button>
   </div>
   <p id="mapEmbedStatus" class="info" role="status">지도 미리보기 서버 연결 확인 중...</p>
   <iframe id="amrMapFrame" title="AMR ROS2 지도 및 Nav2 경로 미리보기"
       sandbox="allow-scripts allow-same-origin" loading="lazy"
       style="display:none;width:100%;min-height:860px;border:1px solid #cbd5e1;border-radius:10px;background:#fff"></iframe>
-  <p class="warning">지도에서 경로를 선택해도 모터는 움직이지 않습니다. 이 지도 서버는 인증 없는 시험용이므로 신뢰할 수 있는 사설망에서만 실행하세요.</p>
+  <p class="warning">목적지 클릭만으로 모터가 움직이지 않습니다. 실구동은 지도 내부 AUTO 시작 버튼을 별도로 눌러야 하며, 하드웨어 E-Stop을 준비하고 격리된 시험망에서만 사용하세요.</p>
 </section>
 <script>
 'use strict';
