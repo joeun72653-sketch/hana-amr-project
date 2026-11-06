@@ -182,6 +182,147 @@ class MapNode(Node):
             self.depth_blocked = message.data is not False
             self.depth_at = time.monotonic()
 
+    def _current_tf_position(self):
+        transform = self.tf_buffer.lookup_transform("map", "base_link", Time())
+        stamp = transform.header.stamp
+        stamp_sec = stamp.sec + stamp.nanosec * 1e-9
+        age = self.get_clock().now().nanoseconds * 1e-9 - stamp_sec
+        if stamp_sec <= 0 or not -0.1 <= age <= 0.8:
+            raise ValueError("map->base_link TF stale; recheck ICP/AMCL before moving")
+        p = transform.transform.translation
+        return float(p.x), float(p.y)
+
+    def _motion_prerequisites(self, require_stopped):
+        now = time.monotonic()
+        with self.lock:
+            if not self.allow_physical_auto:
+                raise ValueError("Live AUTO disabled in server startup")
+            if self.selected_mode != "AUTO":
+                raise ValueError("Select AUTO mode first")
+            if self.motor_at is None or now - self.motor_at > 0.45 or not self.motor_state:
+                raise ValueError("CAN motor state missing or stale")
+            s = self.motor_state
+            if s.get("fault") is not False or s.get("stop_verified") is not True:
+                raise ValueError("CAN fault or stop not verified")
+            if require_stopped and (s.get("applied") != [0, 0] or s.get("actual") != [0, 0]):
+                raise ValueError("Wheels must be stopped before AUTO")
+            if self.mux_at is None or now - self.mux_at > 0.45 or not self.mux_state:
+                raise ValueError("Guarded motor mux missing")
+            if self.mux_state.get("live_enabled") is not True:
+                raise ValueError("Guarded motor mux is not enabled for live output")
+            if (self.depth_at is None or now-self.depth_at > 0.30
+                    or self.depth_blocked):
+                raise ValueError("Depth sensor blocked or not fresh")
+        return self._current_tf_position()
+
+    def start_auto(self):
+        x_now, y_now = self._motion_prerequisites(require_stopped=True)
+        with self.lock:
+            if self.auto_active or self.auto_state in ("STARTING", "RUNNING"):
+                raise ValueError("AUTO already active")
+            if not self.preview or not self.target:
+                raise ValueError("Plan a valid path first")
+            if self.arrival_lift_plan.get("mode") != "none":
+                raise ValueError("Automatic lift not supported in first drive test")
+            first = self.preview[0]
+            if math.hypot(x_now-first[0], y_now-first[1]) > 0.45:
+                raise ValueError("Planned start differs from current localization; replan first")
+            goal = dict(self.target)
+            self.auto_state = "STARTING"
+            self.auto_failure = None
+            self.auto_distance = None
+        try:
+            if not self.navigator.wait_for_server(timeout_sec=2):
+                raise ValueError("NavigateToPose action unavailable")
+            pose = PoseStamped()
+            pose.header.frame_id = "map"
+            pose.header.stamp = self.get_clock().now().to_msg()
+            pose.pose.position.x = goal["x"]
+            pose.pose.position.y = goal["y"]
+            angle = math.radians(goal["yaw_deg"])
+            pose.pose.orientation.z = math.sin(angle/2)
+            pose.pose.orientation.w = math.cos(angle/2)
+            task = NavigateToPose.Goal()
+            task.pose = pose
+            handle = wait_future(self.navigator.send_goal_async(
+                task, feedback_callback=self._auto_feedback), 4)
+            if handle is None or not handle.accepted:
+                raise ValueError("NavigateToPose goal rejected")
+            with self.lock:
+                self.auto_handle = handle
+                self.auto_active = True
+                self.auto_started = time.monotonic()
+                self.auto_heartbeat_at = self.auto_started
+                self.auto_state = "RUNNING"
+            handle.get_result_async().add_done_callback(self._auto_result)
+            return {"auto_state": "RUNNING", "message": "Nav2 AUTO goal accepted"}
+        except Exception as error:
+            with self.lock:
+                self.auto_active = False
+                self.auto_state = "FAILED"
+                self.auto_failure = str(error)
+            self.auto_heartbeat_pub.publish(Bool(data=False))
+            raise
+
+    def _auto_feedback(self, message):
+        try:
+            remaining = float(message.feedback.distance_remaining)
+        except (AttributeError, ValueError, TypeError):
+            return
+        with self.lock:
+            self.auto_distance = remaining
+
+    def _auto_result(self, future):
+        try:
+            result = future.result()
+            succeeded = result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
+            status = "SUCCEEDED" if succeeded else "CANCELED_OR_FAILED"
+        except Exception:
+            status = "RESULT_ERROR"
+        with self.lock:
+            self.auto_active = False
+            self.auto_handle = None
+            if self.auto_state != "STOPPED":
+                self.auto_state = status
+        self.auto_heartbeat_pub.publish(Bool(data=False))
+
+    def stop_auto(self, reason="STOPPED"):
+        with self.lock:
+            handle = self.auto_handle
+            self.auto_handle = None
+            self.auto_active = False
+            self.auto_state = "STOPPED"
+            self.auto_failure = reason
+        # Remove the motor-authority heartbeat before asynchronous cancel.
+        self.auto_heartbeat_pub.publish(Bool(data=False))
+        if handle is not None:
+            handle.cancel_goal_async()
+        return {"auto_state": "STOPPED", "message": reason}
+
+    def heartbeat_auto(self):
+        with self.lock:
+            if not self.auto_active:
+                raise ValueError("No active autonomous goal")
+            self.auto_heartbeat_at = time.monotonic()
+        return {"auto_state": "RUNNING"}
+
+    def auto_tick(self):
+        with self.lock:
+            running = self.auto_active
+            heartbeat_at = self.auto_heartbeat_at
+        if not running:
+            self.auto_heartbeat_pub.publish(Bool(data=False))
+            return
+        if heartbeat_at is None or time.monotonic()-heartbeat_at >= 0.65:
+            self.stop_auto("Operator phone heartbeat lost")
+            return
+        try:
+            self._motion_prerequisites(require_stopped=False)
+        except Exception as error:
+            self.stop_auto("Safety condition lost: "+str(error))
+            return
+        self.auto_heartbeat_pub.publish(Bool(data=True))
+
     def map_callback(self, message):
         with self.lock:
             self.grid = message
