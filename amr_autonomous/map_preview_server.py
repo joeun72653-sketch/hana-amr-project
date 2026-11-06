@@ -85,6 +85,7 @@ class MapNode(Node):
         self.initial_pose = None
         self.initial_pose_at = None
         self.preview = []
+        self.selected_mode = "MANUAL"
         self.arrival_lift_plan = {"mode": "none", "pulse": None}
         self.target = None
         map_qos = QoSProfile(depth=1,
@@ -186,6 +187,16 @@ class MapNode(Node):
                 "data": list(g.data),
             }
 
+    def select_mode_preview(self, payload):
+        """UI-only request: does NOT grant motor authority or publish ROS commands."""
+        mode = payload.get("mode") if isinstance(payload, dict) else None
+        if mode not in ("MANUAL", "AUTO"):
+            raise ValueError("mode must be MANUAL or AUTO")
+        with self.lock:
+            self.selected_mode = mode
+        return {"selected_mode": mode, "control_enabled": False,
+                "message": "PREVIEW ONLY: no CAN/ARM/velocity command sent"}
+
     def status(self):
         with self.lock:
             age = time.monotonic() - self.pose_at if self.pose_at is not None else None
@@ -207,6 +218,8 @@ class MapNode(Node):
                     "path": self.preview,
                     "destination": self.target,
                     "arrival_lift_plan": self.arrival_lift_plan,
+                    "selected_mode": self.selected_mode,
+                    "control_enabled": False,
                     "motion_enabled": False,
                     "detail": "Preview only. No motor or lift commands are sent."}
 
@@ -309,7 +322,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, {"error": "Not found"})
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/plan":
+        endpoint = urlparse(self.path).path
+        if endpoint not in ("/api/plan", "/api/mode"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -317,7 +331,10 @@ class Handler(BaseHTTPRequestHandler):
             if size < 1 or size > 4096:
                 raise ValueError("Invalid request length")
             payload = json.loads(self.rfile.read(size))
-            self.respond(200, self.server.node.plan(payload))
+            if endpoint == "/api/mode":
+                self.respond(200, self.server.node.select_mode_preview(payload))
+            else:
+                self.respond(200, self.server.node.plan(payload))
         except (ValueError, TimeoutError, TypeError) as error:
             self.respond(422, {"error": str(error)})
         except Exception as error:
