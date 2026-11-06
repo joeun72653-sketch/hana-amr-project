@@ -169,9 +169,23 @@ class MapNode(Node):
         arrival = parse_lift(message.get("lift", {}))
         with self.lock:
             g = self.grid
-            ok_pose = self.pose_at and time.monotonic()-self.pose_at < 2
-        if g is None or not ok_pose:
-            raise ValueError("Map/AMCL pose missing or stale")
+            # Preview only: explicitly use the last available map-frame pose.
+            # An RViz initialpose that is newer than AMCL is merely an operator
+            # estimate and must not be treated as a confirmed localization.
+            initial_pending = (self.initial_pose_at is not None and
+                               (self.pose_at is None or self.initial_pose_at > self.pose_at))
+            start_pose = (list(self.initial_pose) if initial_pending
+                          else list(self.pose) if self.pose is not None else None)
+            start_source = ("rviz_initialpose_unverified" if initial_pending else
+                            "amcl_last_known")
+            age = (time.monotonic() - self.pose_at
+                   if self.pose_at is not None else None)
+        if g is None:
+            raise ValueError("Map unavailable")
+        if start_pose is None:
+            raise ValueError("No AMCL pose or RViz initial pose received. Set 2D Pose Estimate first.")
+        # Starting-point staleness is allowed ONLY for ComputePathToPose.
+        # This service has no NavigateToPose, CAN, lift or motion API.
         i, j = coordinates(g, x, y)
         w, h = g.info.width, g.info.height
         if not (0 <= i < w and 0 <= j < h) or g.data[j*w + i] != 0:
@@ -189,7 +203,16 @@ class MapNode(Node):
 
         task = ComputePathToPose.Goal()
         task.goal = target
-        task.use_start = False
+        task.start = PoseStamped()
+        task.start.header.frame_id = "map"
+        task.start.header.stamp = self.get_clock().now().to_msg()
+        task.start.pose.position.x = start_pose[0]
+        task.start.pose.position.y = start_pose[1]
+        task.start.pose.orientation.z = math.sin(start_pose[2] / 2)
+        task.start.pose.orientation.w = math.cos(start_pose[2] / 2)
+        # Without use_start=True, Nav2 uses a live TF pose regardless of
+        # the selected point shown in the preview web UI.
+        task.use_start = True
         handle = wait_future(self.planner.send_goal_async(task), 3)
         if handle is None or not handle.accepted:
             raise ValueError("Nav2 refused path preview")
@@ -202,7 +225,11 @@ class MapNode(Node):
             self.target = {"x": x, "y": y, "yaw_deg": a}
             self.arrival_lift_plan = arrival
         return {"path": poses, "destination": self.target,
-                "arrival_lift_plan": arrival, "message": "Planned only; no motion"}
+                "arrival_lift_plan": arrival,
+                "preview_start": start_pose,
+                "preview_start_source": start_source,
+                "preview_pose_age_sec": round(age, 2) if age is not None else None,
+                "message": "Approximate preview from last/selected pose; NO motion. Verify localization before AUTO."}
 
 
 class Handler(BaseHTTPRequestHandler):
