@@ -24,6 +24,7 @@ CAN_BAUD = 115200
 # CANopen 0x60FF carries a signed 32-bit integer. This is a wire-format bound,
 # not a software speed limit or a verified safe mechanical speed.
 CANOPEN_INT32_MAX = (1 << 31) - 1
+MAX_SOFTWARE_RPM = 1000.0  # Operator's requested absolute ceiling, both wheels
 BENCH_BYPASS_DISARM = os.environ.get('AMR_BENCH_BYPASS_DISARM') == '1'
 COMMAND_TIMEOUT = 0.35
 AUTH_TIMEOUT = 0.5  # Web bridge must refresh explicit permission
@@ -136,7 +137,7 @@ class DualWheelState:
             if self.fault or self.shutdown:
                 return False
             if (not isinstance(value, (int, float)) or
-                    not math.isfinite(value) or abs(value) > CANOPEN_INT32_MAX):
+                    not math.isfinite(value) or abs(value) > min(CANOPEN_INT32_MAX, MAX_SOFTWARE_RPM)):
                 self._latch('INVALID_RPM')
                 return False
 
@@ -196,13 +197,13 @@ class DualWheelState:
             self._latch('AUTH_TIMEOUT')
         if not self.armed:
             return
-        # A newly unlocked side that never supplies its first RPM must
-        # still expire after 350 ms.
-        #for t in self.received_at.values():
-        #t = self.armed_at if t is None else t
-        #    if t is None or not (0 <= now-t < self.timeout):
-        #        self._latch('WATCHDOG_TIMEOUT')
-        #        break
+        # Fail closed when the FIRST post-unlock sample is missing or either
+        # wheel's later RPM data expires. Do not use stale commands.
+        for t in self.received_at.values():
+            deadline = self.armed_at if t is None else t
+            if deadline is None or not (0 <= now-deadline < self.timeout):
+                self._latch('WATCHDOG_TIMEOUT')
+                break
 
     def snapshot(self, now=None):
         if now is None:
@@ -493,6 +494,13 @@ class CanWorker(threading.Thread):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mux-input', action='store_true',
+                        help='Use dedicated /amr_mux CAN input; reject legacy wheel publishers')
+    args = parser.parse_args()
+    if args.mux_input and BENCH_BYPASS_DISARM:
+        raise RuntimeError('AMR_BENCH_BYPASS_DISARM forbidden with mux-input')
     import rclpy
     from rclpy.node import Node
     from std_msgs.msg import Float64, Bool, Float64MultiArray, String
@@ -508,11 +516,12 @@ def main():
     class WheelRpmNode(Node):
         def __init__(self):
             super().__init__('amr_wheel_rpm_can')
-            self.create_subscription(Float64, 'wheel_rpm_left',
+            prefix = '/amr_mux/' if args.mux_input else '/'
+            self.create_subscription(Float64, prefix + 'wheel_rpm_left',
                                      lambda m: self.receive('left', m.data), 1)
-            self.create_subscription(Float64, 'wheel_rpm_right',
+            self.create_subscription(Float64, prefix + 'wheel_rpm_right',
                                      lambda m: self.receive('right', m.data), 1)
-            self.create_subscription(Bool, '/amr_motion_authorized',
+            self.create_subscription(Bool, prefix + 'motion_authorized',
                                      lambda m: state.authorize(m.data), 10)
             self.create_subscription(Bool, '/amr/depth_obstacle',
                                      lambda m: state.update_depth(m.data), 10)
@@ -524,7 +533,7 @@ def main():
             self.last_status = None
             self.was_timeout_latched = False
             self.get_logger().info(
-                'Listening wheel_rpm_left/right (std_msgs/Float64); no software RPM limit; '
+                f'Listening {prefix}wheel_rpm_left/right (std_msgs/Float64); max abs RPM {MAX_SOFTWARE_RPM:.0f}; '
                 f'watchdog {COMMAND_TIMEOUT*1000:.0f} ms PER topic. '
                 'Only explicit /amr_motion_authorized=True permits arming. '
                 'Both topics must receive 0 AFTER a latch to unlock together. '
