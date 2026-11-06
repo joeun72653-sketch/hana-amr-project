@@ -22,7 +22,7 @@ class GuardedMotorMux(Node):
     STATUS_AGE = 0.45
     DEPTH_AGE = 0.30
     MAX_MANUAL = 500.0
-    MAX_AUTO = 1000.0
+    MAX_AUTO = 30.0  # First live trial HARD CAP; do not raise before hardware validation
 
     def __init__(self, live):
         super().__init__("amr_guarded_motor_mux")
@@ -234,6 +234,7 @@ class GuardedMotorMux(Node):
         report = {
             "requested_mode": self.mode, "phase": self.phase,
             "requested_auto_max_rpm": self.auto_limit,
+            "first_trial_hard_cap_rpm": self.MAX_AUTO,
             "input_rpm": data, "input_fresh": fresh,
             "motor_stop_verified": self.stopped(now),
             "depth_clear": depth_ok, "lift_safe": lift_ok,
