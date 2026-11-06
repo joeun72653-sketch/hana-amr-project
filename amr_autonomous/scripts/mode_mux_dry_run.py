@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only ROS2 mode mux laboratory: NEVER commands wheels, CAN or authorization.
 
-MANUAL source is OBSERVED CAN input from the currently running web bridge.
+MANUAL source is an ISOLATED diagnostic request pair; not a live CAN input.
 AUTO source is an RPM conversion candidate. Output stays on diagnostic topics;
 there is deliberately NO publisher to /wheel_rpm_left, /wheel_rpm_right,
 or /amr_motion_authorized. This is NOT a runtime motor controller.
@@ -38,8 +38,8 @@ class DryRunMux(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(String, "/amr_web/requested_mode", self.on_mode, mode_qos)
         for key, topic in (
-            ("manual_left", "/wheel_rpm_left"),
-            ("manual_right", "/wheel_rpm_right"),
+            ("manual_left", "/amr_manual/wheel_rpm_left_requested"),
+            ("manual_right", "/amr_manual/wheel_rpm_right_requested"),
             ("auto_left", "/mapex/wheel_rpm_left_requested"),
             ("auto_right", "/mapex/wheel_rpm_right_requested"),
         ):
@@ -130,11 +130,11 @@ class DryRunMux(Node):
             "stop_verified": stopped,
             "switch_pending": self.switch_pending,
             "zero_handshake_observed": self.switch_zero_seen,
-            "input_source": "legacy_web_can_input" if self.mode == "MANUAL" else "mapex_auto_requested",
+            "input_source": "isolated_manual_request" if self.mode == "MANUAL" else "mapex_auto_requested",
             "reason": reason,
             "motor_output_enabled": False,
             "control_authorized": False,
-            "note": "Diagnostic only; legacy web bridge still directly publishes CAN input when running.",
+            "note": "Diagnostic only. Neither source is forwarded to CAN. Legacy web bridge is NOT mode-gated.",
         }
         self.diag_pub.publish(String(data=json.dumps(info)))
         summary = (self.mode, reason, tuple(candidate))
