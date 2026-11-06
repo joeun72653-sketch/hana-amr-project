@@ -20,7 +20,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import ComputePathToPose
 from nav_msgs.msg import OccupancyGrid, Path as NavPath
 from visualization_msgs.msg import Marker
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -87,6 +87,8 @@ class MapNode(Node):
         self.initial_pose_at = None
         self.preview = []
         self.selected_mode = "MANUAL"
+        # An operator-requested maximum; NOT an approved physical motor limit.
+        self.auto_rpm_request_max = 60
         self.arrival_lift_plan = {"mode": "none", "pulse": None}
         self.target = None
         map_qos = QoSProfile(depth=1,
@@ -119,6 +121,9 @@ class MapNode(Node):
         self.mode_pub = self.create_publisher(
             String, "/amr_web/requested_mode", preview_qos)
         self.mode_pub.publish(String(data=self.selected_mode))
+        self.auto_rpm_pub = self.create_publisher(
+            Float64, "/amr_web/auto_max_rpm_requested", preview_qos)
+        self.auto_rpm_pub.publish(Float64(data=float(self.auto_rpm_request_max)))
         self.create_subscription(PoseStamped, "/amr_web/rviz_goal_request",
                                  self.on_rviz_preview_goal, 10)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
@@ -233,6 +238,17 @@ class MapNode(Node):
         return {"selected_mode": mode, "control_enabled": False,
                 "message": "PREVIEW ONLY: no CAN/ARM/velocity command sent"}
 
+    def set_auto_rpm_request(self, payload):
+        """Store operator AUTO RPM request, without issuing any motor commands."""
+        value = payload.get("rpm") if isinstance(payload, dict) else None
+        if type(value) is not int or not 30 <= value <= 1000 or value % 10 != 0:
+            raise ValueError("AUTO RPM must be an integer 30..1000 in steps of 10")
+        with self.lock:
+            self.auto_rpm_request_max = value
+        self.auto_rpm_pub.publish(Float64(data=float(value)))
+        return {"auto_rpm_requested_max": value, "motor_output_enabled": False,
+                "message": "Setpoint request saved only; actual CAN output NOT enabled."}
+
     def status(self):
         with self.lock:
             age = time.monotonic() - self.pose_at if self.pose_at is not None else None
@@ -255,6 +271,8 @@ class MapNode(Node):
                     "destination": self.target,
                     "arrival_lift_plan": self.arrival_lift_plan,
                     "selected_mode": self.selected_mode,
+                    "auto_rpm_requested_max": self.auto_rpm_request_max,
+                    "auto_rpm_effective_live_limit": None,
                     "control_enabled": False,
                     "motion_enabled": False,
                     "detail": "Preview only. No motor or lift commands are sent."}
@@ -359,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         endpoint = urlparse(self.path).path
-        if endpoint not in ("/api/plan", "/api/mode"):
+        if endpoint not in ("/api/plan", "/api/mode", "/api/auto-rpm"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -369,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(size))
             if endpoint == "/api/mode":
                 self.respond(200, self.server.node.select_mode_preview(payload))
+            elif endpoint == "/api/auto-rpm":
+                self.respond(200, self.server.node.set_auto_rpm_request(payload))
             else:
                 self.respond(200, self.server.node.plan(payload))
         except (ValueError, TimeoutError, TypeError) as error:
