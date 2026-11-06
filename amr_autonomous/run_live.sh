@@ -42,6 +42,7 @@ fi
   "$APP/amr_one_command_live.launch.py" \
   "$APP/scripts/wait_for_amcl_tf.py" \
   "$APP/scripts/check_activate_nav2.py" \
+  "$APP/scripts/start_map_amcl_lifecycle.py" \
   "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ros_wheel_rpm_can.py" \
   "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ws_to_ros.py"
 echo "[PREFLIGHT] Python syntax passed"
