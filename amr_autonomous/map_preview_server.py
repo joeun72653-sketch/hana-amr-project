@@ -467,8 +467,12 @@ class MapNode(Node):
                     "arrival_lift_plan": self.arrival_lift_plan,
                     "selected_mode": self.selected_mode,
                     "auto_rpm_requested_max": self.auto_rpm_request_max,
-                    "auto_rpm_effective_live_limit": None,
-                    "control_enabled": False,
+                    "auto_rpm_effective_live_limit": self.auto_rpm_request_max if self.allow_physical_auto else None,
+                    "physical_auto_allowed": self.allow_physical_auto,
+                    "auto_state": self.auto_state,
+                    "auto_failure": self.auto_failure,
+                    "auto_distance_remaining_m": self.auto_distance,
+                    "control_enabled": self.allow_physical_auto,
                     "motion_enabled": False,
                     "detail": "Preview only. No motor or lift commands are sent."}
 
@@ -572,7 +576,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         endpoint = urlparse(self.path).path
-        if endpoint not in ("/api/plan", "/api/mode", "/api/auto-rpm"):
+        if endpoint not in ("/api/plan", "/api/mode", "/api/auto-rpm",
+                             "/api/auto/start", "/api/auto/stop", "/api/auto/heartbeat"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -584,6 +589,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, self.server.node.select_mode_preview(payload))
             elif endpoint == "/api/auto-rpm":
                 self.respond(200, self.server.node.set_auto_rpm_request(payload))
+            elif endpoint == "/api/auto/start":
+                self.respond(200, self.server.node.start_auto())
+            elif endpoint == "/api/auto/stop":
+                self.respond(200, self.server.node.stop_auto("Operator STOP"))
+            elif endpoint == "/api/auto/heartbeat":
+                self.respond(200, self.server.node.heartbeat_auto())
             else:
                 self.respond(200, self.server.node.plan(payload))
         except (ValueError, TimeoutError, TypeError) as error:
@@ -599,11 +610,13 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8771)
+    parser.add_argument("--allow-physical-auto", action="store_true",
+                        help="Explicit motor-capable launch only; NEVER use for path-preview tests")
     parser.add_argument("--bind", default="127.0.0.1",
                         help="Default localhost only. Private test LAN only for 0.0.0.0.")
     args = parser.parse_args()
     rclpy.init()
-    node = MapNode()
+    node = MapNode(allow_physical_auto=args.allow_physical_auto)
     executor = MultiThreadedExecutor(num_threads=3)
     executor.add_node(node)
     thread = threading.Thread(target=executor.spin, daemon=True)
