@@ -4,6 +4,21 @@
 # ROS 2 setup.bash references optional variables; nounset (-u) breaks Jazzy environment setup.
 set -eo pipefail
 
+# Explicit live mode shares the same saved-map/AMCL/Nav2/web stack,
+# but delegates all hardware interlocks and CAN ownership to run_live.sh.
+# Default invocation stays strictly non-actuating.
+if [[ "${1:-}" == "--live-auto" ]]; then
+  shift
+  echo "[AMR] Explicit LIVE AUTO requested. Delegating to supervised CAN launch."
+  exec bash "$HOME/hana-amr-project-autonomous/amr_autonomous/run_live.sh" "$@"
+fi
+if [[ "${1:-}" == "--help" ]]; then
+  echo "Usage: bash amr_autonomous/run_all.sh [--live-auto]"
+  echo "Default: read-only map and route preview, no motor commands."
+  echo "--live-auto: guarded physical CAN with START confirmation and 30 RPM cap."
+  exit 0
+fi
+
 export PYTHONNOUSERSITE=1
 export ROS_DOMAIN_ID=31
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
