@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMR 웹 지도 · 경로 미리보기</title>
+<style>
+:root{font-family:system-ui,'Noto Sans KR',sans-serif;color:#17243b;background:#f4f6fa}
+*{box-sizing:border-box}body{margin:0;padding:20px;max-width:1450px;margin:auto}
+header{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}
+h1{font-size:23px;margin:0}small,.muted{color:#66758a}.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}
+.panel{background:white;border:1px solid #dce1e9;border-radius:13px;padding:16px}
+.canvas-wrap{position:relative;background:#d2d7d9;min-height:440px;display:grid;place-items:center;overflow:auto;border-radius:8px}
+canvas{display:block;max-width:100%;height:auto;image-rendering:pixelated;cursor:crosshair}
+label{display:block;font-weight:600;font-size:13px;margin-top:12px}input,select,button{width:100%;padding:11px;border:1px solid #b9c4d2;border-radius:8px;margin-top:6px;font-size:14px;background:white}
+button{cursor:pointer;font-weight:700}button.primary{background:#1d4ed8;color:white;border-color:#1d4ed8}
+button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-word;background:#f4f6fa;padding:12px;border-radius:8px;max-height:210px;overflow:auto}
+.tag{font-size:12px;background:#e9eef6;border-radius:99px;padding:7px 11px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-size:12px}
+.blue{color:#0b63e5}.red{color:#df4545}.green{color:#159c6a}
+@media(max-width:850px){.layout{grid-template-columns:1fr}body{padding:10px}}
+</style></head><body>
+<header><div><h1>AMR 자율주행 지도</h1><small>ROS2 Map + AMCL + Nav2 경로 미리보기</small></div><span class="tag" id="connection">연결 대기</span></header>
+<div class="layout">
+<section class="panel"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+<b>SLAM 지도</b><small id="mapInfo">지도 대기</small></div>
+<div class="canvas-wrap" style="margin-top:12px"><canvas id="mapCanvas" width="600" height="450" aria-label="클릭으로 목적지 선택"></canvas></div>
+<div class="legend"><span class="blue">● AMR 현재 위치</span><span class="red">● 목적지</span><span class="green">━ 예상 경로</span></div>
+<p class="muted" style="font-size:12px">현재 위치는 AMCL에서 가져오며 목적지는 지도에서 클릭해 지정할 수 있어. 지도 회전·원점·해상도를 반영해 ROS map 좌표로 변환해.</p>
+</section>
+<section class="panel"><h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
+<p id="pose" class="muted">AMR 현재 위치: 대기</p>
+<label for="x">목적지 X (m)</label><input id="x" type="number" step="0.01" placeholder="지도를 클릭하세요">
+<label for="y">목적지 Y (m)</label><input id="y" type="number" step="0.01" placeholder="지도를 클릭하세요">
+<label for="yaw">도착 방향 (°)</label><input id="yaw" type="number" min="-360" max="360" step="5" value="0">
+<label for="lift">최종 진입 전 리프트 계획 (실행 안 함)</label>
+<select id="lift"><option value="none">리프트 동작 없음</option><option value="up">TOP 상승</option><option value="down">BOTTOM 하강</option><option value="target">목표 Pulse</option></select>
+<label for="pulse">목표 Pulse (0~2000)</label><input id="pulse" type="number" min="0" max="2000" step="1" value="1500" disabled>
+<button id="plan" class="primary">Nav2 경로 미리보기</button>
+<button disabled title="실제 CAN 주행 안전 검증 후 활성화">AUTO 자율주행 시작 (미연결)</button>
+<button disabled title="아직 실제 주행 연결 전">모터 주행 정지 (미연결)</button>
+<h4>실행 상태</h4><pre id="status">웹 미리보기 모드: 모터 및 리프트 명령을 전송하지 않습니다.</pre>
+</section></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), canvas=$('mapCanvas'),ctx=canvas.getContext('2d');
+let map=null,mapImage=null,robot=null,path=[],dest=null;
+const scale=1;
+$('lift').onchange=()=>{$('pulse').disabled=$('lift').value!=='target'};
+const worldToCell=(x,y)=>{
+ const [ox,oy,th]=map.origin,dx=x-ox,dy=y-oy,c=Math.cos(th),s=Math.sin(th);
+ return [(c*dx+s*dy)/map.resolution,(-s*dx+c*dy)/map.resolution];
+};
+const cellToWorld=(cx,cy)=>{
+ const [ox,oy,th]=map.origin,c=Math.cos(th),s=Math.sin(th),r=map.resolution;
+ return [ox+r*(c*cx-s*cy),oy+r*(s*cx+c*cy)];
+};
+function drawMarker(x,y,color,radius){
+ if(!map)return;const [cx,cy]=worldToCell(x,y);
+ ctx.beginPath();ctx.arc(cx,map.height-cy,radius,0,2*Math.PI);ctx.fillStyle=color;ctx.fill();
+ ctx.lineWidth=1.6;ctx.strokeStyle='#fff';ctx.stroke();
+}
+function paint(){
+ if(!map||!mapImage)return;
+ canvas.width=map.width;canvas.height=map.height;
+ ctx.putImageData(mapImage,0,0);
+ if(path.length>1){ctx.beginPath();path.forEach(([x,y],i)=>{const [cx,cy]=worldToCell(x,y);
+ if(i===0)ctx.moveTo(cx,map.height-cy);else ctx.lineTo(cx,map.height-cy)});
+ ctx.strokeStyle='#17a16c';ctx.lineWidth=3;ctx.stroke();}
+ if(dest)drawMarker(dest.x,dest.y,'#e24747',5);
+ if(robot){drawMarker(robot[0],robot[1],'#246af0',5);
+ const [cx,cy]=worldToCell(robot[0],robot[1]); const a=robot[2]-(map.origin[2]||0);
+ ctx.beginPath();ctx.moveTo(cx,map.height-cy);ctx.lineTo(cx+12*Math.cos(a),map.height-cy-12*Math.sin(a));
+ ctx.strokeStyle='#246af0';ctx.lineWidth=3;ctx.stroke();}
+}
+async function refreshMap(){
+ const m=await (await fetch('/api/map',{cache:'no-store'})).json();
+ if(!m.ready){$('mapInfo').textContent='Map Server 지도 대기';return}
+ if(map&&map.width===m.width&&map.height===m.height&&map.resolution===m.resolution&&JSON.stringify(map.origin)===JSON.stringify(m.origin))return;
+ if(!Array.isArray(m.data)||m.data.length!==m.width*m.height){throw Error('지도 크기 오류')}
+ map=m;const image=new ImageData(m.width,m.height);
+ for(let y=0;y<m.height;y++)for(let x=0;x<m.width;x++){
+   const value=m.data[y*m.width+x];const k=4*((m.height-1-y)*m.width+x);
+   const gray=value<0?185:Math.round(255*(1-Math.min(100,value)/100));
+   image.data[k]=gray;image.data[k+1]=gray;image.data[k+2]=gray;image.data[k+3]=255;
+ }
+ mapImage=image;$('mapInfo').textContent=m.width+'×'+m.height+' · '+m.resolution+'m/cell';paint();
+}
+canvas.addEventListener('click',event=>{
+ if(!map)return;
+ const rect=canvas.getBoundingClientRect();
+ const x=(event.clientX-rect.left)*map.width/rect.width;
+ const y=(event.clientY-rect.top)*map.height/rect.height;
+ const [wx,wy]=cellToWorld(x,map.height-y);
+ dest={x:wx,y:wy};$('x').value=wx.toFixed(3);$('y').value=wy.toFixed(3);path=[];paint();
+});
+function goal(){return {x:Number($('x').value),y:Number($('y').value),yaw_deg:Number($('yaw').value)}}
+$('plan').onclick=async()=>{
+ if(!$('x').value||!$('y').value){$('status').textContent='먼저 지도에서 목적지를 선택하세요.';return}
+ const button=$('plan');button.disabled=true;$('status').textContent='Nav2 ComputePathToPose 계산 중...';
+ const mode=$('lift').value,lift={mode};if(mode==='target')lift.pulse=Number($('pulse').value);
+ try{const response=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({goal:goal(),lift})});
+ const data=await response.json();if(!response.ok)throw Error(data.error||'Planning failed');
+ path=data.path||[];dest=data.destination||goal();$('status').textContent='경로 계산 성공: '+path.length+' 지점\n리프트 계획: '+mode+'\n실제 주행 명령은 전송하지 않음';paint();
+ }catch(e){$('status').textContent='경로 계산 실패: '+e.message}
+ finally{button.disabled=false}
+};
+async function poll(){
+ try{await refreshMap(); const s=await(await fetch('/api/status',{cache:'no-store'})).json();
+ robot=s.pose;$('pose').textContent=robot?'AMR 현재 위치: X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m':'AMR 현재 위치: AMCL 데이터 대기';
+ $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';paint();
+ }catch(e){$('connection').textContent='연결 오류';$('status').textContent='서버 확인: '+e.message}
+}
+setInterval(poll,1500);poll();
+</script></body></html>
