@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Map/AMCL/Nav2 path-preview web server. Never commands motors or lift.
+"""ROS2 Jazzy Map/AMCL/Nav2 web server.
 
-Ubuntu ROS2 Jazzy. This server reads OccupancyGrid and AMCL pose, offers
-ComputePathToPose planning, and records an arrival lift *plan* for review.
-It does not run NavigateToPose, publish cmd_vel, or send WebSocket commands.
+Default is path-preview only. Explicit --allow-physical-auto enables guarded
+NavigateToPose start/stop requests. A SEPARATE CAN mux must hold all motor
+interlocks; this web server never directly publishes CAN RPM or lift commands.
 """
 from __future__ import annotations
 
@@ -442,8 +442,8 @@ class MapNode(Node):
                 is_running = self.auto_active or self.auto_state == "STARTING"
             if is_running:
                 self.stop_auto("Mode switched away from AUTO")
-        return {"selected_mode": mode, "control_enabled": False,
-                "message": "PREVIEW ONLY: no CAN/ARM/velocity command sent"}
+        return {"selected_mode": mode, "control_enabled": self.allow_physical_auto,
+                "message": "Mode selected. Actual motor authority requires Nav2 goal and guarded mux."}
 
     def set_auto_rpm_request(self, payload):
         """Store operator AUTO RPM request, without issuing any motor commands."""
@@ -453,8 +453,9 @@ class MapNode(Node):
         with self.lock:
             self.auto_rpm_request_max = value
         self.auto_rpm_pub.publish(Float64(data=float(value)))
-        return {"auto_rpm_requested_max": value, "motor_output_enabled": False,
-                "message": "Setpoint request saved only; actual CAN output NOT enabled."}
+        return {"auto_rpm_requested_max": value,
+                "motor_output_enabled": self.auto_active and self.allow_physical_auto,
+                "message": "RPM request updated; guarded CAN mux applies only during authorized AUTO goal."}
 
     def status(self):
         with self.lock:
@@ -485,8 +486,10 @@ class MapNode(Node):
                     "auto_failure": self.auto_failure,
                     "auto_distance_remaining_m": self.auto_distance,
                     "control_enabled": self.allow_physical_auto,
-                    "motion_enabled": False,
-                    "detail": "Preview only. No motor or lift commands are sent."}
+                    "motion_enabled": self.auto_active and self.allow_physical_auto,
+                    "detail": ("LIVE guarded Nav2 goal interface; CAN mux owns wheel commands."
+                               if self.allow_physical_auto
+                               else "Preview only. No motor or lift commands are sent.")}
 
     def plan(self, message):
         goal = message.get("goal", {})
