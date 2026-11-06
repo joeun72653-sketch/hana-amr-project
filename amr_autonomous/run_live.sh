@@ -46,7 +46,7 @@ echo "[PREFLIGHT] Python syntax passed"
 
 echo "[LIVE MOTOR] This enables CANopen motor drives and can move the AMR."
 echo "Verify hardware E-stop, drive-side cable-loss stop, cleared path and supervision."
-echo "30 RPM requested initially. Web operator may select up to 1000 RPM."
+echo "First AUTO trial is HARD LIMITED to 30 RPM per wheel by guarded mux."
 read -r -p "Type START to enable supervised CAN hardware (anything else cancels): " answer
 if [[ "$answer" != "START" ]]; then
   echo "[CANCELED] No CAN process started."
