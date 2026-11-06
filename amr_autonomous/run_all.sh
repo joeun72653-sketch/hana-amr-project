@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the existing real AMR mapping/localization/nav preview stack in ONE terminal.
 # This is NON-ACTUATING: no CAN, ARM, Lift, or NavigateToPose requests.
-set -euo pipefail
+# ROS 2 setup.bash references optional variables; nounset (-u) breaks Jazzy environment setup.
+set -eo pipefail
 
 export PYTHONNOUSERSITE=1
 export ROS_DOMAIN_ID=31
