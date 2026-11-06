@@ -81,6 +81,8 @@ class MapNode(Node):
         self.pose = None
         self.pose_at = None
         self.pose_msg_stamp = None
+        self.initial_pose = None
+        self.initial_pose_at = None
         self.preview = []
         self.arrival_lift_plan = {"mode": "none", "pulse": None}
         self.target = None
@@ -92,6 +94,13 @@ class MapNode(Node):
         # sample even when localization does not publish again while stopped.
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
                                  self.pose_callback, map_qos)
+        # RViz 2D Pose Estimate publishes /initialpose. Listen-only: do NOT
+        # re-publish it or change the robot pose from this web application.
+        self.create_subscription(PoseWithCovarianceStamped, "/initialpose",
+                                 self.initial_pose_callback,
+                                 QoSProfile(depth=10,
+                                            reliability=ReliabilityPolicy.RELIABLE,
+                                            durability=DurabilityPolicy.VOLATILE))
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
 
     def map_callback(self, message):
@@ -105,6 +114,17 @@ class MapNode(Node):
             self.pose_at = time.monotonic()
             self.pose_msg_stamp = [message.header.stamp.sec,
                                    message.header.stamp.nanosec]
+
+    def initial_pose_callback(self, message):
+        if message.header.frame_id.lstrip("/") != "map":
+            self.get_logger().warning("Ignoring initial pose not in map frame")
+            return
+        p = message.pose.pose
+        with self.lock:
+            self.initial_pose = [p.position.x, p.position.y, yaw(p.orientation)]
+            self.initial_pose_at = time.monotonic()
+            # Previously previewed route used an older localization origin.
+            self.preview = []
 
     def map_data(self):
         with self.lock:
@@ -122,11 +142,18 @@ class MapNode(Node):
     def status(self):
         with self.lock:
             age = time.monotonic() - self.pose_at if self.pose_at is not None else None
-            # Display the last known pose with staleness clearly indicated.
-            # This does NOT authorize navigation from old localization data.
-            return {"pose": self.pose,
-                    "pose_age_sec": round(age, 2) if age is not None else None,
-                    "pose_stale": age is None or age >= 2,
+            # On a new RViz initialization request, display its requested map
+            # location immediately. It is NOT a verified AMCL estimate.
+            awaiting_amcl = (self.initial_pose_at is not None and
+                             (self.pose_at is None or self.initial_pose_at > self.pose_at))
+            display_pose = self.initial_pose if awaiting_amcl else self.pose
+            display_age = ((time.monotonic() - self.initial_pose_at)
+                           if awaiting_amcl else age)
+            stale = awaiting_amcl or age is None or age >= 2
+            return {"pose": display_pose,
+                    "pose_source": "initialpose_pending_amcl" if awaiting_amcl else ("amcl" if self.pose is not None else "none"),
+                    "pose_age_sec": round(display_age, 2) if display_age is not None else None,
+                    "pose_stale": stale,
                     "pose_msg_stamp": self.pose_msg_stamp,
                     "map_ready": self.grid is not None,
                     "planner_ready": self.planner.server_is_ready(),
