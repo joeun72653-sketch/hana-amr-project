@@ -99,7 +99,9 @@ $('plan').onclick=async()=>{
  try{const response=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},
  body:JSON.stringify({goal:goal(),lift})});
  const data=await response.json();if(!response.ok)throw Error(data.error||'Planning failed');
- path=data.path||[];dest=data.destination||goal();$('status').textContent='경로 계산 성공: '+path.length+' 지점\n리프트 계획: '+mode+'\n실제 주행 명령은 전송하지 않음';paint();
+ path=data.path||[];dest=data.destination||goal();
+ const source=data.preview_start_source==='rviz_initialpose_unverified'?'RViz에서 지정한 미검증 초기 위치':'마지막 AMCL 위치';
+ $('status').textContent='경로 계산 성공: '+path.length+' 지점\n출발점: '+source+' (경로 미리보기 전용)\n리프트 계획: '+mode+'\n실제 주행 명령은 전송하지 않음. AUTO 주행 전 위치 추정을 다시 검증해야 합니다.';paint();
  }catch(e){$('status').textContent='경로 계산 실패: '+e.message}
  finally{button.disabled=false}
 };
