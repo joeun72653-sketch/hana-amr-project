@@ -40,6 +40,8 @@ fi
   "$APP/scripts/guarded_motor_mux.py" \
   "$APP/scripts/auto_rpm_limiter.py" \
   "$APP/amr_one_command_live.launch.py" \
+  "$APP/scripts/wait_for_amcl_tf.py" \
+  "$APP/scripts/check_activate_nav2.py" \
   "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ros_wheel_rpm_can.py" \
   "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ws_to_ros.py"
 echo "[PREFLIGHT] Python syntax passed"
