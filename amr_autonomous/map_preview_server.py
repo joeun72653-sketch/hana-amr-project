@@ -638,7 +638,8 @@ def main():
     thread.start()
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.node = node
-    print(f"[MAP PREVIEW] http://{args.bind}:{args.port} - READ/PLAN ONLY", flush=True)
+    label = "LIVE GUARDED AUTO" if args.allow_physical_auto else "READ/PLAN ONLY"
+    print(f"[AMR MAP] http://{args.bind}:{args.port} - {label}", flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
