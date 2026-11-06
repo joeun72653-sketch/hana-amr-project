@@ -76,7 +76,7 @@ def generate_launch_description():
     activate = process("activate_map_and_amcl", [
         "/usr/bin/python3", "-u",
         str(APP / "scripts" / "start_map_amcl_lifecycle.py"),
-        "--timeout", "60"])
+        "--timeout", "90"])
     wait_localization = process("wait_for_amcl_localization", [
         "/usr/bin/python3", "-u",
         str(APP / "scripts" / "wait_for_amcl_tf.py"),
@@ -87,7 +87,7 @@ def generate_launch_description():
     nav2_verify = process("verify_nav2_lifecycle", [
         "/usr/bin/python3", "-u",
         str(APP / "scripts" / "check_activate_nav2.py"),
-        "--timeout", "90", "--autostart-grace", "8"])
+        "--timeout", "120", "--autostart-grace", "8"])
     rpm_converter = process("auto_rpm_request_diagnostic", [
         "ros2", "run", "real_amr_lidar", "real_mapex_cmd_vel_to_rpm"],
         condition=IfCondition(rpm_enabled))
