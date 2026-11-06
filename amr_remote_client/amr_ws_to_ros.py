@@ -67,13 +67,22 @@ def calculate_rpm(command, rpm):
 
 
 class AMRBridge(Node):
-    def __init__(self, bench_motion=False):
+    def __init__(self, bench_motion=False, private_output=False):
         super().__init__('amr_ws_to_ros')
         self.bench_motion = bench_motion
+        self.private_output = private_output
         self.calibration_hold = False
-        self.left_pub = self.create_publisher(Float64, '/wheel_rpm_left', 10)
-        self.right_pub = self.create_publisher(Float64, '/wheel_rpm_right', 10)
-        self.auth_pub = self.create_publisher(Bool, '/amr_motion_authorized', 10)
+        # Opt-in private output keeps legacy WebSocket drive protocol while
+        # allowing an external single-owner mux to arbitrate CAN. The default
+        # (private_output=False) deliberately preserves legacy deployments.
+        prefix = '/amr_manual' if private_output else ''
+        self.left_pub = self.create_publisher(Float64, prefix + '/wheel_rpm_left' +
+             ('_requested' if private_output else ''), 10)
+        self.right_pub = self.create_publisher(Float64, prefix + '/wheel_rpm_right' +
+             ('_requested' if private_output else ''), 10)
+        self.auth_pub = self.create_publisher(
+            Bool, '/amr_manual/motion_authorized' if private_output
+            else '/amr_motion_authorized', 10)
         self.lock = threading.RLock()
         self.motor_state = None
         self.state_at = None
@@ -535,9 +544,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--bench-motion', action='store_true',
                         help='Explicit bench test; up to 500 RPM bench motor output')
+    parser.add_argument('--private-output', action='store_true',
+                        help='Publish only /amr_manual request/auth topics; does NOT directly drive CAN')
     args = parser.parse_args()
     rclpy.init()
-    bridge = AMRBridge(bench_motion=args.bench_motion)
+    bridge = AMRBridge(bench_motion=args.bench_motion,
+                       private_output=args.private_output)
     executor = SingleThreadedExecutor()
     executor.add_node(bridge)
     thread = threading.Thread(target=spin_ros, args=(executor,), daemon=True)
