@@ -31,13 +31,13 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <button type="button" id="modeManual">MANUAL 선택</button>
 <button type="button" id="modeAuto">AUTO 선택</button></div>
 <p id="modeInfo" class="muted">선택 모드: MANUAL · 실제 제어 미연결</p>
-<label for="autoRpmRange">AUTO 설정 RPM (30~1000)</label>
-<input id="autoRpmRange" aria-label="AUTO RPM 슬라이더" type="range" min="30" max="1000" step="10" value="30">
+<label for="autoRpmRange">AUTO 첫 실주행 제한: 30 RPM</label>
+<input id="autoRpmRange" aria-label="AUTO RPM 슬라이더" type="range" min="30" max="30" step="10" value="30">
 <div style="display:flex;gap:8px;align-items:center">
-<input id="autoRpmNumber" aria-label="AUTO RPM 직접 입력" type="number" min="30" max="1000" step="10" value="30" inputmode="numeric" style="flex:1;min-width:0">
+<input id="autoRpmNumber" aria-label="AUTO RPM 직접 입력" type="number" min="30" max="30" step="10" value="30" inputmode="numeric" style="flex:1;min-width:0">
 <button type="button" id="autoRpmSave" style="width:auto;min-width:80px">RPM 적용</button>
 </div>
-<p id="autoRpmInfo" class="muted" style="font-size:12px">AUTO 기본 30 RPM · 설정 가능한 최대 1000 RPM. 두 바퀴에 이 상한을 적용하며 별도 저속 상한은 두지 않습니다.</p>
+<p id="autoRpmInfo" class="muted" style="font-size:12px">첫 실주행은 좌우 각각 최대 30RPM으로 고정했습니다. 실제 주행 안전 검증 완료 전에는 상향하지 않습니다.</p>
 <hr style="border:0;border-top:1px solid #e1e5eb;margin:17px 0">
 <h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
 <p id="pose" class="muted">AMR 현재 위치: 대기</p>
@@ -69,11 +69,11 @@ async function changeMode(mode) {
 }
 $('modeManual').onclick=()=>{if(autoRunning)stopAutonomous('MANUAL 전환으로 AUTO 취소');changeMode('MANUAL');};
 $('modeAuto').onclick=()=>changeMode('AUTO');
-const clampAutoRpm=n=>Math.max(30,Math.min(1000,Math.round(n/10)*10));
+const clampAutoRpm=n=>30; // First physical trial only
 $('autoRpmRange').oninput=()=>{$('autoRpmNumber').value=$('autoRpmRange').value;};
 $('autoRpmNumber').oninput=()=>{
  const value=Number($('autoRpmNumber').value);
- if(Number.isFinite(value)&&value>=30&&value<=1000)$('autoRpmRange').value=clampAutoRpm(value);
+ if(Number.isFinite(value)&&value===30)$('autoRpmRange').value=clampAutoRpm(value);
 };
 let autoRunning=false,heartbeatBusy=false,autoHeartbeatTimer=null;
 async function stopAutonomous(message='AUTO STOP 요청'){
@@ -121,8 +121,8 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden&&autoRunnin
 $('autoRpmSave').onclick=async()=>{
  const raw=$('autoRpmNumber').value.trim();
  const value=Number(raw);
- if(!raw||!Number.isInteger(value)||value<30||value>1000||value%10!==0){
-  $('autoRpmInfo').textContent='30~1000 사이의 RPM을 10 단위로 입력하세요.';return;
+ if(!raw||!Number.isInteger(value)||value!==30){
+  $('autoRpmInfo').textContent='첫 실주행은 30 RPM으로 고정됩니다.';return;
  }
  $('autoRpmSave').disabled=true;
  try{
