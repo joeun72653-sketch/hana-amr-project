@@ -40,8 +40,8 @@ class DryRunMux(Node):
         for key, topic in (
             ("manual_left", "/amr_manual/wheel_rpm_left_requested"),
             ("manual_right", "/amr_manual/wheel_rpm_right_requested"),
-            ("auto_left", "/mapex/wheel_rpm_left_requested"),
-            ("auto_right", "/mapex/wheel_rpm_right_requested"),
+            ("auto_left", "/amr_auto/wheel_rpm_left_limited"),
+            ("auto_right", "/amr_auto/wheel_rpm_right_limited"),
         ):
             self.create_subscription(
                 Float64, topic, lambda msg, source=key: self.on_rpm(source, msg.data), 10)
@@ -130,7 +130,7 @@ class DryRunMux(Node):
             "stop_verified": stopped,
             "switch_pending": self.switch_pending,
             "zero_handshake_observed": self.switch_zero_seen,
-            "input_source": "isolated_manual_request" if self.mode == "MANUAL" else "mapex_auto_requested",
+            "input_source": "isolated_manual_request" if self.mode == "MANUAL" else "auto_limited_to_user_rpm",
             "reason": reason,
             "motor_output_enabled": False,
             "control_authorized": False,
