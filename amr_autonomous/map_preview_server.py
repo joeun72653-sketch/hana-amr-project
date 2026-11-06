@@ -148,6 +148,33 @@ class MapNode(Node):
             self.target = None
         self.clear_rviz_preview()
 
+    def on_rviz_preview_goal(self, message):
+        """Accept only RViz preview pose in map frame. No motion goal sent."""
+        if message.header.frame_id.lstrip("/") != "map":
+            self.get_logger().warning("RViz preview goal must have frame_id=map")
+            return
+        pose = message.pose
+        values = (pose.position.x, pose.position.y, pose.orientation.x,
+                  pose.orientation.y, pose.orientation.z, pose.orientation.w)
+        if not all(math.isfinite(v) for v in values):
+            return
+        magnitude = sum(v*v for v in values[2:])
+        if not 0.9 < magnitude < 1.1:
+            return
+        goal = {"x": pose.position.x, "y": pose.position.y,
+                "yaw_deg": math.degrees(yaw(pose.orientation))}
+        # Planning waits for a ROS action. Never wait inside the ROS callback.
+        with self.lock:
+            self.target = goal
+            self.preview = []
+        threading.Thread(target=self._plan_from_rviz, args=(goal,), daemon=True).start()
+
+    def _plan_from_rviz(self, goal):
+        try:
+            self.plan({"goal": goal, "lift": {"mode": "none"}})
+        except Exception as exc:
+            self.get_logger().warning(f"RViz goal preview failed: {exc}")
+
     def clear_rviz_preview(self):
         empty = NavPath()
         empty.header.frame_id = "map"
