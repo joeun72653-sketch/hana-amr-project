@@ -102,6 +102,19 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
+// The outer dashboard STOP/DISARM must cancel AUTO in the embedded :8771
+// frame as well as handling the legacy manual WebSocket control.
+function stopEmbeddedAuto(){
+ const frame=$('amrMapFrame');
+ if(frame&&frame.contentWindow){
+  frame.contentWindow.postMessage(
+   {type:'AMR_AUTO_STOP'}, location.protocol+'//'+location.hostname+':8771');
+ }
+}
+$('stop').addEventListener('click',stopEmbeddedAuto,true);
+$('disarm').addEventListener('click',stopEmbeddedAuto,true);
+window.addEventListener('pagehide',stopEmbeddedAuto);
+
 // Map server runs on another port; use iframe load state rather than
 // cross-origin fetch from the static :8000 dashboard.
 // Reuse the existing AMR host for the local map preview service.
