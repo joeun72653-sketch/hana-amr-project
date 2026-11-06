@@ -87,9 +87,39 @@
 <section class="panel"><h2>시스템 메시지</h2><div id="message">시스템 연결 대기</div></section>
 </div>
 </div>
+<section class="panel" id="autonomousMapPanel" style="max-width:1400px;margin:0 auto 16px">
+  <div class="status-row" style="gap:10px;flex-wrap:wrap">
+    <div><h2 style="margin:0 0 5px">AMR 지도 · 목적지 · 경로 미리보기</h2>
+    <p class="info" style="margin:0">기존 웹에서 지도를 열어 목적지를 지정하면 RViz에도 같은 경로가 표시됩니다. MANUAL/AUTO 버튼은 진단용이며 실제 AUTO 구동은 연결되지 않았습니다.</p></div>
+    <button type="button" id="mapOpen" style="padding:10px 16px;min-width:130px">지도 화면 열기</button>
+  </div>
+  <p id="mapEmbedStatus" class="info" role="status">지도 서버 8771 포트를 별도로 실행해야 합니다.</p>
+  <iframe id="amrMapFrame" title="AMR ROS2 지도 및 Nav2 경로 미리보기"
+      sandbox="allow-scripts allow-same-origin" loading="lazy"
+      style="display:none;width:100%;min-height:860px;border:1px solid #cbd5e1;border-radius:10px;background:#fff"></iframe>
+  <p class="warning">지도에서 경로를 선택해도 모터는 움직이지 않습니다. 이 지도 서버는 인증 없는 시험용이므로 신뢰할 수 있는 사설망에서만 실행하세요.</p>
+</section>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
+// Reuse the existing AMR host for the local map preview service.
+// Delay iframe loading until explicitly opened on the phone.
+$('mapOpen').addEventListener('click',()=>{
+  const frame=$('amrMapFrame');
+  if(frame.style.display==='none'){
+    frame.src=location.protocol+'//'+location.hostname+':8771/';
+    frame.style.display='block';
+    $('mapOpen').textContent='지도 화면 닫기';
+    $('mapEmbedStatus').textContent='지도 서버 연결 중: '+location.hostname+':8771';
+    frame.onload=()=>{$('mapEmbedStatus').textContent='지도 화면 로드됨 · ROS/지도 상태는 화면 내부에서 확인하세요';};
+  }else{
+    // Closing hides the preview UI; it does not command the robot.
+    frame.style.display='none';
+    frame.removeAttribute('src');
+    $('mapOpen').textContent='지도 화면 열기';
+    $('mapEmbedStatus').textContent='지도 화면 닫힘';
+  }
+});
 // AMR PC hosts this HTML, AI camera, IMU WebSocket and calibration HTTP API.
 // The motor-control WebSocket is hosted by the Windows operator PC.
 const CAMERA_HOST=location.hostname, CAMERA_PORT=8090, WS_PORT=8765;
