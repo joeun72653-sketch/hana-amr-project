@@ -41,6 +41,7 @@ def generate_launch_description():
                  APP / "scripts" / "start_map_amcl_lifecycle.py",
                  APP / "scripts" / "mode_mux_dry_run.py",
                  APP / "scripts" / "check_activate_nav2.py",
+                 APP / "scripts" / "wait_for_amcl_tf.py",
                  STATIC / "index.html",
                  REMOTE / "amr_ros_wheel_rpm_can.py",
                  REMOTE / "amr_ws_to_ros.py",
@@ -76,6 +77,10 @@ def generate_launch_description():
         "/usr/bin/python3", "-u",
         str(APP / "scripts" / "start_map_amcl_lifecycle.py"),
         "--timeout", "60"])
+    wait_localization = process("wait_for_amcl_localization", [
+        "/usr/bin/python3", "-u",
+        str(APP / "scripts" / "wait_for_amcl_tf.py"),
+        "--timeout", "300", "--max-age", "2"])
     nav2 = process("mapex_nav2", [
         "ros2", "launch", "real_amr_lidar",
         "real_mapex_nav2.launch.py", "autostart:=true"])
@@ -127,12 +132,12 @@ def generate_launch_description():
                 EmitEvent(event=Shutdown(reason="map or AMCL failed to activate"))
             ]
         return [
-            LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting Nav2/RViz/phone map."),
-            nav2,
-            TimerAction(period=3.0, actions=[nav2_verify]),
-            LogInfo(msg="[AMR] Checking Nav2 lifecycle before physical CAN startup"),
-            LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ and embedded map :8771"),
-            LogInfo(msg="[AMR] Physical CAN will start ONLY after Nav2 lifecycle check"),
+            LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting RViz before Nav2."),
+            rviz,
+            wait_localization,
+            LogInfo(msg="[AMR] Set the real AMR pose in RViz using 2D Pose Estimate."),
+            LogInfo(msg="[AMR] Waiting for fresh map->odom TF. CAN remains OFF."),
+            LogInfo(msg="[AMR] Nav2/CAN will wait until localization is confirmed."),
             RegisterEventHandler(OnProcessExit(
                 target_action=can,
                 on_exit=[EmitEvent(event=Shutdown(reason="CAN driver stopped"))])),
@@ -144,6 +149,18 @@ def generate_launch_description():
                 on_exit=[EmitEvent(event=Shutdown(reason="AUTO web server stopped"))])),
         ]
 
+    def after_localization(event, context):
+        if event.returncode != 0:
+            return [
+                LogInfo(msg="[AMR] AMCL localization unavailable. CAN will NOT start."),
+                EmitEvent(event=Shutdown(reason="AMCL pose not initialized"))
+            ]
+        return [
+            LogInfo(msg="[AMR] AMCL map->odom available. Starting Nav2."),
+            nav2,
+            TimerAction(period=3.0, actions=[nav2_verify]),
+        ]
+
     def after_nav2_verify(event, context):
         if event.returncode != 0:
             return [
@@ -152,7 +169,7 @@ def generate_launch_description():
             ]
         return [
             LogInfo(msg="[AMR] NAV2 READY. Launching CAN/CAMERA/LIFT and guarded motor mux."),
-            rpm_converter, rviz, phone, preview, auto_rpm, mux, camera, lift,
+            rpm_converter, phone, preview, auto_rpm, mux, camera, lift,
             TimerAction(period=3.0, actions=[can, manual]),
             LogInfo(msg="[AMR] First live AUTO trial clamped to 30 RPM per motor in mux."),
         ]
@@ -180,6 +197,8 @@ def generate_launch_description():
         TimerAction(period=9.0, actions=[activate]),
         RegisterEventHandler(OnProcessExit(
             target_action=activate, on_exit=after_lifecycle)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_localization, on_exit=after_localization)),
         RegisterEventHandler(OnProcessExit(
             target_action=nav2_verify, on_exit=after_nav2_verify)),
     ])
