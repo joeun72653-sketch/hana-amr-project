@@ -56,5 +56,15 @@ if [[ "$answer" != "START" ]]; then
   exit 1
 fi
 
-echo "[LIVE] Starting hardware CAN with guarded mux and Nav2 goal manager"
-exec ros2 launch "$APP/amr_one_command_live.launch.py" "$@"
+echo "[LIVE] Starting staged Nav2 -> verified guarded CAN launch"
+LOG_DIR="$HOME/.ros/amr_live_console"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/amr_live_$(date +%Y%m%d_%H%M%S).log"
+echo "[LIVE LOG] $LOG_FILE"
+set +e
+ros2 launch "$APP/amr_one_command_live.launch.py" "$@" 2>&1 | tee "$LOG_FILE"
+exit_code=${PIPESTATUS[0]}
+set -e
+echo "[LIVE] ROS launch exit status: $exit_code"
+echo "[LIVE] Find first cause: python3 $APP/scripts/diagnose_last_live_launch.py"
+exit "$exit_code"
