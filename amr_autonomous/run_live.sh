@@ -34,6 +34,19 @@ if pgrep -af 'amr_ros_wheel_rpm_can.py|amr_ws_to_ros.py|amr_one_command_preview.
   exit 1
 fi
 
+# CycloneDDS may exhaust its default participant indices when previous ROS
+# processes remain alive. Probe domain 31 before starting any hardware nodes.
+# Do not kill other ROS processes or change ROS_DOMAIN_ID automatically.
+if ! /usr/bin/python3 -c 'import rclpy; from rclpy.node import Node; rclpy.init(); n=Node("amr_domain_preflight"); n.destroy_node(); rclpy.shutdown()' 2>/tmp/amr_domain_preflight.err; then
+  echo "[BLOCKED] CycloneDDS cannot create a participant in ROS_DOMAIN_ID=31." >&2
+  cat /tmp/amr_domain_preflight.err >&2
+  echo "[CHECK] Review existing ROS processes (do not kill unknown processes):" >&2
+  ps -eo pid,ppid,args | grep -E 'ros2|rviz2|map_server|amcl|lidar|nav2|cyclonedds' | grep -v grep >&2 || true
+  echo "[CHECK] Check CYCLONEDDS_URI and old ROS daemons before retry." >&2
+  exit 1
+fi
+echo "[PREFLIGHT] CycloneDDS domain 31 participant creation OK"
+
 # Abort before touching CAN if any modified Python file has a syntax error.
 /usr/bin/python3 -m py_compile \
   "$APP/map_preview_server.py" \
