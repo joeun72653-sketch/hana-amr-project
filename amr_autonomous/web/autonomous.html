@@ -23,7 +23,7 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <b>SLAM 지도</b><small id="mapInfo">지도 대기</small></div>
 <div class="canvas-wrap" style="margin-top:12px"><canvas id="mapCanvas" width="600" height="450" aria-label="클릭으로 목적지 선택"></canvas></div>
 <div class="legend"><span class="blue">● AMR 현재 위치</span><span class="red">● 목적지</span><span class="green">━ 예상 경로</span></div>
-<p class="muted" style="font-size:12px">현재 위치는 AMCL에서 가져오며 목적지는 지도에서 클릭해 지정할 수 있어. 지도 회전·원점·해상도를 반영해 ROS map 좌표로 변환해.</p>
+<p class="muted" style="font-size:12px">현재 위치는 AMCL에서 가져오고 목적지를 지도에서 클릭하면 Nav2 경로 미리보기가 자동 계산돼. 같은 경로와 목적지는 RViz의 /amr_web/preview_path · /amr_web/preview_goal에도 표시할 수 있어. 실제 모터 주행은 시작하지 않아.</p>
 </section>
 <section class="panel"><h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
 <p id="pose" class="muted">AMR 현재 위치: 대기</p>
@@ -90,6 +90,8 @@ canvas.addEventListener('click',event=>{
  const y=(event.clientY-rect.top)*map.height/rect.height;
  const [wx,wy]=cellToWorld(x,map.height-y);
  dest={x:wx,y:wy};$('x').value=wx.toFixed(3);$('y').value=wy.toFixed(3);path=[];paint();
+ // Clicking a goal triggers path planning only. No NavigateToPose/CAN command.
+ $('plan').click();
 });
 function goal(){return {x:Number($('x').value),y:Number($('y').value),yaw_deg:Number($('yaw').value)}}
 $('plan').onclick=async()=>{
