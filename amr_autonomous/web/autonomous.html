@@ -25,7 +25,14 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <div class="legend"><span class="blue">● AMR 현재 위치</span><span class="red">● 목적지</span><span class="green">━ 예상 경로</span></div>
 <p class="muted" style="font-size:12px">현재 위치는 AMCL에서 가져오고 목적지를 지도에서 클릭하면 Nav2 경로 미리보기가 자동 계산돼. 같은 경로와 목적지는 RViz의 /amr_web/preview_path · /amr_web/preview_goal에도 표시할 수 있어. 실제 모터 주행은 시작하지 않아.</p>
 </section>
-<section class="panel"><h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
+<section class="panel"><h3 style="margin:0 0 8px">모드 선택 (진단 전용)</h3>
+<p class="muted" style="font-size:12px">이 버튼은 웹 서버의 선택 상태만 변경합니다. CAN 모터 ARM, 주행 명령, 리프트를 실행하지 않습니다.</p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+<button type="button" id="modeManual">MANUAL 선택</button>
+<button type="button" id="modeAuto">AUTO 선택</button></div>
+<p id="modeInfo" class="muted">선택 모드: MANUAL · 실제 제어 미연결</p>
+<hr style="border:0;border-top:1px solid #e1e5eb;margin:17px 0">
+<h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
 <p id="pose" class="muted">AMR 현재 위치: 대기</p>
 <label for="x">목적지 X (m)</label><input id="x" type="number" step="0.01" placeholder="지도를 클릭하세요">
 <label for="y">목적지 Y (m)</label><input id="y" type="number" step="0.01" placeholder="지도를 클릭하세요">
@@ -44,6 +51,16 @@ const $=id=>document.getElementById(id), canvas=$('mapCanvas'),ctx=canvas.getCon
 let map=null,mapImage=null,robot=null,path=[],dest=null;
 const scale=1;
 $('lift').onchange=()=>{$('pulse').disabled=$('lift').value!=='target'};
+async function changeMode(mode) {
+ try {
+  const response=await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  const data=await response.json();
+  if(!response.ok)throw Error(data.error||'Mode request rejected');
+  $('modeInfo').textContent='선택 모드: '+data.selected_mode+' · 제어권 미연결 (실제 모터 동작 없음)';
+ }catch(err){$('modeInfo').textContent='모드 선택 오류: '+err.message;}
+}
+$('modeManual').onclick=()=>changeMode('MANUAL');
+$('modeAuto').onclick=()=>changeMode('AUTO');
 const worldToCell=(x,y)=>{
  const [ox,oy,th]=map.origin,dx=x-ox,dy=y-oy,c=Math.cos(th),s=Math.sin(th);
  return [(c*dx+s*dy)/map.resolution,(-s*dx+c*dy)/map.resolution];
@@ -111,7 +128,9 @@ async function poll(){
  try{await refreshMap(); const s=await(await fetch('/api/status',{cache:'no-store'})).json();
  robot=s.pose;const pending=s.pose_source==='initialpose_pending_amcl',oldPose=s.pose_stale===true;
  $('pose').textContent=robot?(pending?'RViz 지정 초기 위치 (AMCL 검증 대기): ':oldPose?'AMR 마지막 위치 (갱신 중단): ':'AMR 현재 추정 위치: ')+'X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m'+(oldPose?' · 주행 전 위치 재확인 필요':''):'AMR 현재 위치: AMCL 데이터 대기';
- $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';paint();
+ $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';
+ $('modeInfo').textContent='선택 모드: '+(s.selected_mode||'MANUAL')+' · 제어권 미연결 (진단 전용)';
+ paint();
  }catch(e){$('connection').textContent='연결 오류';$('status').textContent='서버 확인: '+e.message}
 }
 setInterval(poll,1500);poll();
