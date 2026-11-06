@@ -343,6 +343,10 @@ class MapNode(Node):
                                    message.header.stamp.nanosec]
 
     def initial_pose_callback(self, message):
+        with self.lock:
+            was_running = self.auto_active or self.auto_state == "STARTING"
+        if was_running:
+            self.stop_auto("RViz localization reset during AUTO")
         if message.header.frame_id.lstrip("/") != "map":
             self.get_logger().warning("Ignoring initial pose not in map frame")
             return
@@ -357,6 +361,10 @@ class MapNode(Node):
 
     def on_rviz_preview_goal(self, message):
         """Accept only RViz preview pose in map frame. No motion goal sent."""
+        with self.lock:
+            if self.auto_active or self.auto_state == "STARTING":
+                self.get_logger().warning("Stop AUTO before changing RViz destination")
+                return
         if message.header.frame_id.lstrip("/") != "map":
             self.get_logger().warning("RViz preview goal must have frame_id=map")
             return
@@ -492,6 +500,9 @@ class MapNode(Node):
                                else "Preview only. No motor or lift commands are sent.")}
 
     def plan(self, message):
+        with self.lock:
+            if self.auto_active or self.auto_state == "STARTING":
+                raise ValueError("Stop AUTO before planning a different destination")
         goal = message.get("goal", {})
         x, y, a = parse_goal(goal)
         arrival = parse_lift(message.get("lift", {}))
