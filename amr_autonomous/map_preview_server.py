@@ -20,6 +20,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import ComputePathToPose
 from nav_msgs.msg import OccupancyGrid, Path as NavPath
 from visualization_msgs.msg import Marker
+from std_msgs.msg import String
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -113,6 +114,11 @@ class MapNode(Node):
             NavPath, "/amr_web/preview_path", preview_qos)
         self.preview_goal_pub = self.create_publisher(
             Marker, "/amr_web/preview_goal", preview_qos)
+        # UI selection is a separate read-only diagnostic signal; it MUST
+        # never be interpreted as /amr_motion_authorized or an ARM request.
+        self.mode_pub = self.create_publisher(
+            String, "/amr_web/requested_mode", preview_qos)
+        self.mode_pub.publish(String(data=self.selected_mode))
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
 
     def map_callback(self, message):
@@ -194,6 +200,7 @@ class MapNode(Node):
             raise ValueError("mode must be MANUAL or AUTO")
         with self.lock:
             self.selected_mode = mode
+        self.mode_pub.publish(String(data=mode))
         return {"selected_mode": mode, "control_enabled": False,
                 "message": "PREVIEW ONLY: no CAN/ARM/velocity command sent"}
 
