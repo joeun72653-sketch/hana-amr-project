@@ -31,6 +31,13 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <button type="button" id="modeManual">MANUAL 선택</button>
 <button type="button" id="modeAuto">AUTO 선택</button></div>
 <p id="modeInfo" class="muted">선택 모드: MANUAL · 실제 제어 미연결</p>
+<label for="autoRpmRange">AUTO 설정 RPM (30~1000)</label>
+<input id="autoRpmRange" aria-label="AUTO RPM 슬라이더" type="range" min="30" max="1000" step="10" value="30">
+<div style="display:flex;gap:8px;align-items:center">
+<input id="autoRpmNumber" aria-label="AUTO RPM 직접 입력" type="number" min="30" max="1000" step="10" value="30" inputmode="numeric" style="flex:1;min-width:0">
+<button type="button" id="autoRpmSave" style="width:auto;min-width:80px">RPM 적용</button>
+</div>
+<p id="autoRpmInfo" class="muted" style="font-size:12px">최초 시험값 30 RPM · 최대 입력 1000 RPM. 실제 CAN 구동 속도는 별도 승인 상한 적용.</p>
 <hr style="border:0;border-top:1px solid #e1e5eb;margin:17px 0">
 <h3 style="margin:0 0 8px">목적지 및 작업 설정</h3>
 <p id="pose" class="muted">AMR 현재 위치: 대기</p>
@@ -61,6 +68,28 @@ async function changeMode(mode) {
 }
 $('modeManual').onclick=()=>changeMode('MANUAL');
 $('modeAuto').onclick=()=>changeMode('AUTO');
+const clampAutoRpm=n=>Math.max(30,Math.min(1000,Math.round(n/10)*10));
+$('autoRpmRange').oninput=()=>{$('autoRpmNumber').value=$('autoRpmRange').value;};
+$('autoRpmNumber').oninput=()=>{
+ const value=Number($('autoRpmNumber').value);
+ if(Number.isFinite(value)&&value>=30&&value<=1000)$('autoRpmRange').value=clampAutoRpm(value);
+};
+$('autoRpmSave').onclick=async()=>{
+ const raw=$('autoRpmNumber').value.trim();
+ const value=Number(raw);
+ if(!raw||!Number.isInteger(value)||value<30||value>1000||value%10!==0){
+  $('autoRpmInfo').textContent='30~1000 사이의 RPM을 10 단위로 입력하세요.';return;
+ }
+ $('autoRpmSave').disabled=true;
+ try{
+  const response=await fetch('/api/auto-rpm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rpm:value})});
+  const data=await response.json();
+  if(!response.ok)throw Error(data.error||'설정 실패');
+  $('autoRpmRange').value=String(value);
+  $('autoRpmInfo').textContent='AUTO RPM 요청값 '+value+' 저장됨 · 실제 CAN 제어는 별도 인터락/속도 상한 적용';
+ }catch(e){$('autoRpmInfo').textContent='AUTO RPM 설정 실패: '+e.message;}
+ finally{$('autoRpmSave').disabled=false;}
+};
 const worldToCell=(x,y)=>{
  const [ox,oy,th]=map.origin,dx=x-ox,dy=y-oy,c=Math.cos(th),s=Math.sin(th);
  return [(c*dx+s*dy)/map.resolution,(-s*dx+c*dy)/map.resolution];
@@ -130,6 +159,11 @@ async function poll(){
  $('pose').textContent=robot?(pending?'RViz 지정 초기 위치 (AMCL 검증 대기): ':oldPose?'AMR 마지막 위치 (갱신 중단): ':'AMR 현재 추정 위치: ')+'X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m'+(oldPose?' · 주행 전 위치 재확인 필요':''):'AMR 현재 위치: AMCL 데이터 대기';
  $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';
  $('modeInfo').textContent='선택 모드: '+(s.selected_mode||'MANUAL')+' · 제어권 미연결 (진단 전용)';
+ const selectedRpm=s.auto_rpm_requested_max;
+ if(Number.isInteger(selectedRpm)&&document.activeElement!==$('autoRpmNumber')&&document.activeElement!==$('autoRpmRange')){
+   $('autoRpmRange').value=String(selectedRpm);
+   $('autoRpmNumber').value=String(selectedRpm);
+ }
  paint();
  }catch(e){$('connection').textContent='연결 오류';$('status').textContent='서버 확인: '+e.message}
 }
