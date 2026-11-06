@@ -134,6 +134,9 @@ def generate_launch_description():
         return [
             LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting RViz before Nav2."),
             rviz,
+            phone,
+            preview,
+            LogInfo(msg="[AMR] Web map is available during localization; physical AUTO remains gated."),
             wait_localization,
             LogInfo(msg="[AMR] Set the real AMR pose in RViz using 2D Pose Estimate."),
             LogInfo(msg="[AMR] Waiting for fresh map->odom TF. CAN remains OFF."),
@@ -169,7 +172,7 @@ def generate_launch_description():
             ]
         return [
             LogInfo(msg="[AMR] NAV2 READY. Launching CAN/CAMERA/LIFT and guarded motor mux."),
-            rpm_converter, phone, preview, auto_rpm, mux, camera, lift,
+            rpm_converter, auto_rpm, mux, camera, lift,
             TimerAction(period=3.0, actions=[can, manual]),
             LogInfo(msg="[AMR] First live AUTO trial clamped to 30 RPM per motor in mux."),
         ]
