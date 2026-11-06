@@ -90,7 +90,7 @@ def generate_launch_description():
     )
 
     actions = [
-        DeclareLaunchArgument('with_map_preview', default_value='false',
+        DeclareLaunchArgument('with_map_preview', default_value='true',
                               description='Optional embedded phone map and dry-run mode observer, NO AUTO motor control'),
         DeclareLaunchArgument('bench_motion', default_value='false',
                               description='Explicit opt-in: bench_motion:=true enables nonzero wheel RPM'),
