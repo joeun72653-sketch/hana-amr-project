@@ -204,10 +204,14 @@ class GuardedMotorMux(Node):
                 if not self.stopped(now):
                     reason = "WAIT_PHYSICAL_STOP"
                     self.publish_output(False)
-                elif any(abs(v) > 1e-9 for v in data):
+                elif self.mode == "MANUAL" and any(abs(v) > 1e-9 for v in data):
+                    # Manual must return to neutral before accepting movement.
                     reason = "WAIT_FRESH_ZERO_PAIR"
                     self.publish_output(False)
                 else:
+                    # Auto may already have a nonzero Nav2 command by the time
+                    # a goal is accepted. The mux itself issues the mandatory
+                    # zero handshake while CAN confirms both drives stopped.
                     self.phase = "ZERO_HANDSHAKE"
                     self.publish_output(True, 0.0, 0.0)
             elif self.phase == "ZERO_HANDSHAKE":
