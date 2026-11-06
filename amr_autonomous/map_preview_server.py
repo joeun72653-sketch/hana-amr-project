@@ -119,6 +119,8 @@ class MapNode(Node):
         self.mode_pub = self.create_publisher(
             String, "/amr_web/requested_mode", preview_qos)
         self.mode_pub.publish(String(data=self.selected_mode))
+        self.create_subscription(PoseStamped, "/amr_web/rviz_goal_request",
+                                 self.on_rviz_preview_goal, 10)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
 
     def map_callback(self, message):
