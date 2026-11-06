@@ -34,6 +34,16 @@ if pgrep -af 'amr_ros_wheel_rpm_can.py|amr_ws_to_ros.py|amr_one_command_preview.
   exit 1
 fi
 
+# Abort before touching CAN if any modified Python file has a syntax error.
+/usr/bin/python3 -m py_compile \
+  "$APP/map_preview_server.py" \
+  "$APP/scripts/guarded_motor_mux.py" \
+  "$APP/scripts/auto_rpm_limiter.py" \
+  "$APP/amr_one_command_live.launch.py" \
+  "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ros_wheel_rpm_can.py" \
+  "$HOME/hana-amr-project-autonomous/amr_remote_client/amr_ws_to_ros.py"
+echo "[PREFLIGHT] Python syntax passed"
+
 echo "[LIVE MOTOR] This enables CANopen motor drives and can move the AMR."
 echo "Verify hardware E-stop, drive-side cable-loss stop, cleared path and supervision."
 echo "30 RPM requested initially. Web operator may select up to 1000 RPM."
