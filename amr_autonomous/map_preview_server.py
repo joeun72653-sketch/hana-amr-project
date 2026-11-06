@@ -80,6 +80,7 @@ class MapNode(Node):
         self.grid = None
         self.pose = None
         self.pose_at = None
+        self.pose_msg_stamp = None
         self.preview = []
         self.arrival_lift_plan = {"mode": "none", "pulse": None}
         self.target = None
@@ -87,8 +88,10 @@ class MapNode(Node):
                              reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(OccupancyGrid, "/map", self.map_callback, map_qos)
+        # Match AMCL's reliable/transient-local pose publisher: receive its last
+        # sample even when localization does not publish again while stopped.
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
-                                 self.pose_callback, qos_profile_sensor_data)
+                                 self.pose_callback, map_qos)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
 
     def map_callback(self, message):
@@ -100,6 +103,8 @@ class MapNode(Node):
         with self.lock:
             self.pose = [p.position.x, p.position.y, yaw(p.orientation)]
             self.pose_at = time.monotonic()
+            self.pose_msg_stamp = [message.header.stamp.sec,
+                                   message.header.stamp.nanosec]
 
     def map_data(self):
         with self.lock:
@@ -116,8 +121,14 @@ class MapNode(Node):
 
     def status(self):
         with self.lock:
-            pose = self.pose if self.pose_at and time.monotonic()-self.pose_at < 2 else None
-            return {"pose": pose, "map_ready": self.grid is not None,
+            age = time.monotonic() - self.pose_at if self.pose_at is not None else None
+            # Display the last known pose with staleness clearly indicated.
+            # This does NOT authorize navigation from old localization data.
+            return {"pose": self.pose,
+                    "pose_age_sec": round(age, 2) if age is not None else None,
+                    "pose_stale": age is None or age >= 2,
+                    "pose_msg_stamp": self.pose_msg_stamp,
+                    "map_ready": self.grid is not None,
                     "planner_ready": self.planner.server_is_ready(),
                     "path": self.preview,
                     "destination": self.target,
