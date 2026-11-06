@@ -102,24 +102,8 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-// Map preview runs automatically from the integrated launch when enabled.
-async function mapServerStatus(){
- try{
-  const response=await fetch('http://'+location.hostname+':8771/api/status',{cache:'no-store'});
-  if(!response.ok)throw Error('지도 서버 응답 없음');
-  const data=await response.json();
-  $('mapEmbedStatus').textContent=data.map_ready
-   ?'지도 서버 연결됨 · 목적지를 찍으면 Nav2 경로가 계산됩니다 (주행 명령 없음)'
-   :'지도 서버 연결됨 · ROS 지도 데이터 대기';
-  return true;
- }catch(error){
-  $('mapEmbedStatus').textContent='지도 서버 미연결 · IPC에서 지도 미리보기 서버 실행 필요';
-  return false;
- }
-}
-// Existing static dashboard is served from :8000; the map preview is :8771.
-// Mobile browsers do not need a token, but this must remain a trusted LAN.
-setTimeout(mapServerStatus,600);
+// Map server runs on another port; use iframe load state rather than
+// cross-origin fetch from the static :8000 dashboard.
 // Reuse the existing AMR host for the local map preview service.
 // Delay iframe loading until explicitly opened on the phone.
 $('mapOpen').addEventListener('click',()=>{
@@ -141,6 +125,8 @@ $('mapOpen').addEventListener('click',()=>{
 // AMR PC hosts this HTML, AI camera, IMU WebSocket and calibration HTTP API.
 // The motor-control WebSocket is hosted by the Windows operator PC.
 const CAMERA_HOST=location.hostname, CAMERA_PORT=8090, WS_PORT=8765;
+// Show the full map in the phone dashboard without a separate button press.
+setTimeout(()=>{if($('amrMapFrame').style.display==='none')$('mapOpen').click();},400);
 const MOTOR_WS_HOST='192.168.0.31'; // Windows server IP: edit only if it changed
 const MOTOR_WS_URL=`${location.protocol==='https:'?'wss':'ws'}://${MOTOR_WS_HOST}:${WS_PORT}`;
 const camera=$('camera');
