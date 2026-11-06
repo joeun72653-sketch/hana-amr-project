@@ -87,6 +87,7 @@ class MapNode(Node):
         self.auto_started = None
         self.auto_heartbeat_at = None
         self.auto_state = "IDLE"
+        self.auto_generation = 0
         self.auto_failure = None
         self.auto_distance = None
         self.motor_state = None
@@ -228,6 +229,8 @@ class MapNode(Node):
             if math.hypot(x_now-first[0], y_now-first[1]) > 0.45:
                 raise ValueError("Planned start differs from current localization; replan first")
             goal = dict(self.target)
+            self.auto_generation += 1
+            ticket = self.auto_generation
             self.auto_state = "STARTING"
             self.auto_failure = None
             self.auto_distance = None
@@ -249,6 +252,9 @@ class MapNode(Node):
             if handle is None or not handle.accepted:
                 raise ValueError("NavigateToPose goal rejected")
             with self.lock:
+                if ticket != self.auto_generation or self.auto_state != "STARTING":
+                    handle.cancel_goal_async()
+                    raise ValueError("AUTO start was canceled during goal acceptance")
                 self.auto_handle = handle
                 self.auto_active = True
                 self.auto_started = time.monotonic()
@@ -288,6 +294,7 @@ class MapNode(Node):
 
     def stop_auto(self, reason="STOPPED"):
         with self.lock:
+            self.auto_generation += 1
             handle = self.auto_handle
             self.auto_handle = None
             self.auto_active = False
@@ -430,6 +437,11 @@ class MapNode(Node):
         with self.lock:
             self.selected_mode = mode
         self.mode_pub.publish(String(data=mode))
+        if mode != "AUTO":
+            with self.lock:
+                is_running = self.auto_active or self.auto_state == "STARTING"
+            if is_running:
+                self.stop_auto("Mode switched away from AUTO")
         return {"selected_mode": mode, "control_enabled": False,
                 "message": "PREVIEW ONLY: no CAN/ARM/velocity command sent"}
 
