@@ -40,6 +40,7 @@ def generate_launch_description():
     for path in (MAP, APP / "map_preview_server.py",
                  APP / "scripts" / "start_map_amcl_lifecycle.py",
                  APP / "scripts" / "mode_mux_dry_run.py",
+                 APP / "scripts" / "check_activate_nav2.py",
                  STATIC / "index.html",
                  REMOTE / "amr_ros_wheel_rpm_can.py",
                  REMOTE / "amr_ws_to_ros.py",
@@ -78,6 +79,10 @@ def generate_launch_description():
     nav2 = process("mapex_nav2", [
         "ros2", "launch", "real_amr_lidar",
         "real_mapex_nav2.launch.py", "autostart:=true"])
+    nav2_verify = process("verify_nav2_lifecycle", [
+        "/usr/bin/python3", "-u",
+        str(APP / "scripts" / "check_activate_nav2.py"),
+        "--timeout", "90", "--autostart-grace", "8"])
     rpm_converter = process("auto_rpm_request_diagnostic", [
         "ros2", "run", "real_amr_lidar", "real_mapex_cmd_vel_to_rpm"],
         condition=IfCondition(rpm_enabled))
@@ -124,10 +129,10 @@ def generate_launch_description():
         return [
             LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting Nav2/RViz/phone map."),
             nav2,
-            TimerAction(period=2.0, actions=[rpm_converter, rviz, phone, preview, auto_rpm, mux, camera, lift]),
-            TimerAction(period=5.0, actions=[can, manual]),
+            TimerAction(period=3.0, actions=[nav2_verify]),
+            LogInfo(msg="[AMR] Checking Nav2 lifecycle before physical CAN startup"),
             LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ and embedded map :8771"),
-            LogInfo(msg="[AMR] LIVE CAN ENABLED: default AUTO 30 RPM / requested up to 1000 RPM"),
+            LogInfo(msg="[AMR] Physical CAN will start ONLY after Nav2 lifecycle check"),
             RegisterEventHandler(OnProcessExit(
                 target_action=can,
                 on_exit=[EmitEvent(event=Shutdown(reason="CAN driver stopped"))])),
@@ -137,6 +142,19 @@ def generate_launch_description():
             RegisterEventHandler(OnProcessExit(
                 target_action=preview,
                 on_exit=[EmitEvent(event=Shutdown(reason="AUTO web server stopped"))])),
+        ]
+
+    def after_nav2_verify(event, context):
+        if event.returncode != 0:
+            return [
+                LogInfo(msg="[AMR] Nav2 not ready. CAN will NOT be started."),
+                EmitEvent(event=Shutdown(reason="Nav2 lifecycle failed"))
+            ]
+        return [
+            LogInfo(msg="[AMR] NAV2 READY. Launching CAN/CAMERA/LIFT and guarded motor mux."),
+            rpm_converter, rviz, phone, preview, auto_rpm, mux, camera, lift,
+            TimerAction(period=3.0, actions=[can, manual]),
+            LogInfo(msg="[AMR] First live AUTO trial clamped to 30 RPM per motor in mux."),
         ]
 
     return LaunchDescription([
@@ -162,4 +180,6 @@ def generate_launch_description():
         TimerAction(period=9.0, actions=[activate]),
         RegisterEventHandler(OnProcessExit(
             target_action=activate, on_exit=after_lifecycle)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=nav2_verify, on_exit=after_nav2_verify)),
     ])
