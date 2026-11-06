@@ -30,6 +30,8 @@ class DryRunMux(Node):
         self.motor_status = None
         self.motor_stamp = None
         self.mode_change_at = time.monotonic()
+        self.switch_pending = True
+        self.switch_zero_seen = False
         self.last_log = None
         mode_qos = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -56,6 +58,8 @@ class DryRunMux(Node):
             self.mode = msg.data
             self.mode_change_at = time.monotonic()
             # Never carry older commands across a mode change.
+            self.switch_pending = True
+            self.switch_zero_seen = False
             for key in self.stamps:
                 self.stamps[key] = None
 
@@ -100,7 +104,21 @@ class DryRunMux(Node):
         elif not valid:
             reason = "INVALID_OR_OVER_LIMIT"
         elif not stopped:
+            # No candidate can pass until genuine CAN state is received and
+            # both requested/applied wheel velocities are verified stopped.
+            self.switch_pending = True
+            self.switch_zero_seen = False
             reason = "PHYSICAL_STOP_NOT_VERIFIED"
+        elif self.switch_pending:
+            # A mode transition demands at least one fresh zero RPM pair from
+            # the newly selected input AFTER the mode switch. This remains
+            # diagnostic only; it does not grant real drive authorization.
+            if all(abs(v) <= 1e-9 for v in values):
+                self.switch_zero_seen = True
+                self.switch_pending = False
+                reason = "ZERO_HANDSHAKE_OBSERVED"
+            else:
+                reason = "WAIT_NEW_SOURCE_ZERO"
         else:
             reason = "CANDIDATE_ONLY"
         candidate = list(values) if reason == "CANDIDATE_ONLY" else [0.0, 0.0]
@@ -110,9 +128,13 @@ class DryRunMux(Node):
             "input_fresh": fresh,
             "input_valid": valid,
             "stop_verified": stopped,
+            "switch_pending": self.switch_pending,
+            "zero_handshake_observed": self.switch_zero_seen,
+            "input_source": "legacy_web_can_input" if self.mode == "MANUAL" else "mapex_auto_requested",
             "reason": reason,
             "motor_output_enabled": False,
             "control_authorized": False,
+            "note": "Diagnostic only; legacy web bridge still directly publishes CAN input when running.",
         }
         self.diag_pub.publish(String(data=json.dumps(info)))
         summary = (self.mode, reason, tuple(candidate))
