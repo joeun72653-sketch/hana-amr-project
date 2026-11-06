@@ -48,8 +48,9 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <select id="lift"><option value="none">리프트 동작 없음</option><option value="up">TOP 상승</option><option value="down">BOTTOM 하강</option><option value="target">목표 Pulse</option></select>
 <label for="pulse">목표 Pulse (0~2000)</label><input id="pulse" type="number" min="0" max="2000" step="1" value="1500" disabled>
 <button id="plan" class="primary">Nav2 경로 미리보기</button>
-<button disabled title="실제 CAN 주행 안전 검증 후 활성화">AUTO 자율주행 시작 (미연결)</button>
-<button disabled title="아직 실제 주행 연결 전">모터 주행 정지 (미연결)</button>
+<button id="autoStart" disabled title="실구동 Launch와 모든 인터락이 준비된 경우에만 활성화">AUTO 목표까지 주행 시작</button>
+<button id="autoStop" style="background:#fee2e2;color:#991b1b">■ AUTO 중지</button>
+<p id="autoDriveStatus" class="muted" style="font-size:12px">실제 주행 제어 비활성 · 모터는 움직이지 않습니다.</p>
 <h4>실행 상태</h4><pre id="status">웹 미리보기 모드: 모터 및 리프트 명령을 전송하지 않습니다.</pre>
 </section></div>
 <script>
@@ -66,7 +67,7 @@ async function changeMode(mode) {
   $('modeInfo').textContent='선택 모드: '+data.selected_mode+' · 제어권 미연결 (실제 모터 동작 없음)';
  }catch(err){$('modeInfo').textContent='모드 선택 오류: '+err.message;}
 }
-$('modeManual').onclick=()=>changeMode('MANUAL');
+$('modeManual').onclick=()=>{if(autoRunning)stopAutonomous('MANUAL 전환으로 AUTO 취소');changeMode('MANUAL');};
 $('modeAuto').onclick=()=>changeMode('AUTO');
 const clampAutoRpm=n=>Math.max(30,Math.min(1000,Math.round(n/10)*10));
 $('autoRpmRange').oninput=()=>{$('autoRpmNumber').value=$('autoRpmRange').value;};
@@ -74,6 +75,44 @@ $('autoRpmNumber').oninput=()=>{
  const value=Number($('autoRpmNumber').value);
  if(Number.isFinite(value)&&value>=30&&value<=1000)$('autoRpmRange').value=clampAutoRpm(value);
 };
+let autoRunning=false,heartbeatBusy=false,autoHeartbeatTimer=null;
+async function stopAutonomous(message='AUTO STOP 요청'){
+ autoRunning=false;
+ if(autoHeartbeatTimer){clearInterval(autoHeartbeatTimer);autoHeartbeatTimer=null;}
+ $('autoDriveStatus').textContent=message;
+ try{await fetch('/api/auto/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',keepalive:true});}
+ catch(err){$('autoDriveStatus').textContent='중지 요청 통신 실패 · 하드웨어 E-Stop 확인 필요';}
+}
+async function heartbeatAutonomous(){
+ if(!autoRunning||heartbeatBusy)return;
+ heartbeatBusy=true;
+ try{
+  const response=await fetch('/api/auto/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(!response.ok)throw Error('AUTO heartbeat rejected');
+ }catch(err){
+  autoRunning=false;
+  if(autoHeartbeatTimer){clearInterval(autoHeartbeatTimer);autoHeartbeatTimer=null;}
+  $('autoDriveStatus').textContent='휴대폰 통신 오류: 서버 자동 취소 대기 · E-Stop 확인';
+ }finally{heartbeatBusy=false;}
+}
+$('autoStart').onclick=async()=>{
+ if(autoRunning)return;
+ if(!confirm('AMR이 설정된 목표까지 실제로 이동할 수 있습니다. 하드웨어 비상정지, 주행 공간, 모터 정지 상태를 확인했나요?'))return;
+ $('autoStart').disabled=true;
+ $('autoDriveStatus').textContent='실제 Nav2 AUTO 시작 요청 중...';
+ try{
+  const response=await fetch('/api/auto/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const data=await response.json();
+  if(!response.ok)throw Error(data.error||'AUTO start failed');
+  autoRunning=true;
+  $('autoDriveStatus').textContent='AUTO RUNNING · 주행 중 휴대폰 페이지를 유지하세요';
+  autoHeartbeatTimer=setInterval(heartbeatAutonomous,200);
+  heartbeatAutonomous();
+ }catch(err){$('autoDriveStatus').textContent='AUTO 시작 거부: '+err.message;}
+};
+$('autoStop').onclick=()=>stopAutonomous();
+window.addEventListener('pagehide',()=>{if(autoRunning)stopAutonomous('페이지 종료로 AUTO 중지 요청');});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&autoRunning)stopAutonomous('화면 비활성으로 AUTO 중지 요청');});
 $('autoRpmSave').onclick=async()=>{
  const raw=$('autoRpmNumber').value.trim();
  const value=Number(raw);
@@ -158,7 +197,19 @@ async function poll(){
  robot=s.pose;const pending=s.pose_source==='initialpose_pending_amcl',oldPose=s.pose_stale===true;
  $('pose').textContent=robot?(pending?'RViz 지정 초기 위치 (AMCL 검증 대기): ':oldPose?'AMR 마지막 위치 (갱신 중단): ':'AMR 현재 추정 위치: ')+'X '+robot[0].toFixed(3)+'m / Y '+robot[1].toFixed(3)+'m'+(oldPose?' · 주행 전 위치 재확인 필요':''):'AMR 현재 위치: AMCL 데이터 대기';
  $('connection').textContent=s.map_ready?'ROS 지도 연결':'지도 연결 대기';
- $('modeInfo').textContent='선택 모드: '+(s.selected_mode||'MANUAL')+' · 제어권 미연결 (진단 전용)';
+ $('modeInfo').textContent='선택 모드: '+(s.selected_mode||'MANUAL')+(s.physical_auto_allowed?' · CAN 실구동 활성 준비':' · 진단 전용');
+ $('autoStart').disabled=!s.physical_auto_allowed||s.selected_mode!=='AUTO'||!s.destination||!Array.isArray(s.path)||s.path.length<2||autoRunning;
+ if(s.auto_state==='SUCCEEDED'||s.auto_state==='STOPPED'||s.auto_state==='CANCELED_OR_FAILED'||s.auto_state==='RESULT_ERROR'){
+  if(autoRunning){
+   autoRunning=false;
+   if(autoHeartbeatTimer){clearInterval(autoHeartbeatTimer);autoHeartbeatTimer=null;}
+  }
+ }
+ if(s.auto_state==='RUNNING'){
+  $('autoDriveStatus').textContent='AUTO 주행 중'+(Number.isFinite(s.auto_distance_remaining_m)?' · 남은 거리 '+s.auto_distance_remaining_m.toFixed(2)+'m':'');
+ }else if(s.physical_auto_allowed){
+  $('autoDriveStatus').textContent='AUTO: '+s.auto_state+(s.auto_failure?' · '+s.auto_failure:'');
+ }
  const selectedRpm=s.auto_rpm_requested_max;
  if(Number.isInteger(selectedRpm)&&document.activeElement!==$('autoRpmNumber')&&document.activeElement!==$('autoRpmRange')){
    $('autoRpmRange').value=String(selectedRpm);
