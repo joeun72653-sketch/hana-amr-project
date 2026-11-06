@@ -38,6 +38,7 @@ def generate_launch_description():
     for path in (MAP, APP / "map_preview_server.py",
                  APP / "scripts" / "start_map_amcl_lifecycle.py",
                  APP / "scripts" / "mode_mux_dry_run.py",
+                 APP / "scripts" / "check_activate_nav2.py",
                  STATIC / "index.html"):
         if not path.is_file():
             raise FileNotFoundError(f"[AMR] required file missing: {path}")
@@ -71,6 +72,10 @@ def generate_launch_description():
     nav2 = process("mapex_nav2", [
         "ros2", "launch", "real_amr_lidar",
         "real_mapex_nav2.launch.py", "autostart:=true"])
+    nav2_verify = process("verify_nav2_lifecycle", [
+        "/usr/bin/python3", "-u",
+        str(APP / "scripts" / "check_activate_nav2.py"),
+        "--timeout", "90", "--autostart-grace", "8"])
     rpm_converter = process("auto_rpm_request_diagnostic", [
         "ros2", "run", "real_amr_lidar", "real_mapex_cmd_vel_to_rpm"],
         condition=IfCondition(rpm_enabled))
@@ -103,9 +108,23 @@ def generate_launch_description():
         return [
             LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting Nav2/RViz/phone map."),
             nav2,
-            TimerAction(period=2.0, actions=[rpm_converter, rviz, phone, preview, auto_rpm, mux]),
-            LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ and embedded map :8771"),
+            TimerAction(period=3.0, actions=[nav2_verify]),
+            LogInfo(msg="[AMR] Waiting for Nav2 Planner/Controller/Behavior/BT + Costmaps ACTIVE"),
+
             LogInfo(msg="[AMR] NAVIGATION PREVIEW ONLY — CAN/ARM/LIFT NOT STARTED"),
+        ]
+
+    def after_nav2_verify(event, context):
+        if event.returncode != 0:
+            return [
+                LogInfo(msg="[AMR] Nav2 lifecycle validation FAILED. Stopping preview stack."),
+                EmitEvent(event=Shutdown(reason="Nav2 lifecycle not ready"))
+            ]
+        return [
+            LogInfo(msg="[AMR] Nav2 ALL ACTIVE. Starting RViz + mobile phone map."),
+            rpm_converter, rviz, phone, preview, auto_rpm, mux,
+            LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ embedded map :8771"),
+            LogInfo(msg="[AMR] NAVIGATION PREVIEW ONLY - CAN/ARM/LIFT NOT STARTED"),
         ]
 
     return LaunchDescription([
@@ -129,4 +148,6 @@ def generate_launch_description():
         TimerAction(period=9.0, actions=[activate]),
         RegisterEventHandler(OnProcessExit(
             target_action=activate, on_exit=after_lifecycle)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=nav2_verify, on_exit=after_nav2_verify)),
     ])
