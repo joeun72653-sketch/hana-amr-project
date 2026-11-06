@@ -87,6 +87,9 @@ def generate_launch_description():
     preview = process("map_preview_http_8771", [
         "/usr/bin/python3", "-u", str(APP / "map_preview_server.py"),
         "--bind", "0.0.0.0", "--port", "8771"], cwd=APP)
+    auto_rpm = process("auto_user_rpm_limiter", [
+        "/usr/bin/python3", "-u",
+        str(APP / "scripts/auto_rpm_limiter.py")], cwd=APP)
     mux = process("mode_mux_read_only", [
         "/usr/bin/python3", "-u",
         str(APP / "scripts/mode_mux_dry_run.py")], cwd=APP)
@@ -100,7 +103,7 @@ def generate_launch_description():
         return [
             LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting Nav2/RViz/phone map."),
             nav2,
-            TimerAction(period=2.0, actions=[rpm_converter, rviz, phone, preview, mux]),
+            TimerAction(period=2.0, actions=[rpm_converter, rviz, phone, preview, auto_rpm, mux]),
             LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ and embedded map :8771"),
             LogInfo(msg="[AMR] NAVIGATION PREVIEW ONLY — CAN/ARM/LIFT NOT STARTED"),
         ]
