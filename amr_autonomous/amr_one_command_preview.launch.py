@@ -16,7 +16,7 @@ from launch.actions import (
     DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo,
     RegisterEventHandler, SetEnvironmentVariable, TimerAction,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
@@ -46,6 +46,7 @@ def generate_launch_description():
 
     rviz_enabled = LaunchConfiguration("rviz")
     rpm_enabled = LaunchConfiguration("rpm_diagnostic")
+    physical_auto = LaunchConfiguration("physical_auto")
     map_file = LaunchConfiguration("map_file")
 
     lidar = process("dual_sick_lidar", [
@@ -95,7 +96,12 @@ def generate_launch_description():
         "--bind", "0.0.0.0"], cwd=STATIC)
     preview = process("map_preview_http_8771", [
         "/usr/bin/python3", "-u", str(APP / "map_preview_server.py"),
-        "--bind", "0.0.0.0", "--port", "8771"], cwd=APP)
+        "--bind", "0.0.0.0", "--port", "8771"], cwd=APP,
+        condition=UnlessCondition(physical_auto))
+    auto_web = process("auto_map_http_8771", [
+        "/usr/bin/python3", "-u", str(APP / "map_preview_server.py"),
+        "--bind", "0.0.0.0", "--port", "8771", "--allow-physical-auto"],
+        cwd=APP, condition=IfCondition(physical_auto))
     auto_rpm = process("auto_user_rpm_limiter", [
         "/usr/bin/python3", "-u",
         str(APP / "scripts/auto_rpm_limiter.py")], cwd=APP)
@@ -111,7 +117,7 @@ def generate_launch_description():
             ]
         return [
             LogInfo(msg="[AMR] Map/AMCL ACTIVE. Starting RViz and web BEFORE Nav2."),
-            rviz, phone, preview, auto_rpm, mux,
+            rviz, phone, preview, auto_web, auto_rpm, mux,
             LogInfo(msg="[AMR] RViz: Set the REAL robot pose using 2D Pose Estimate."),
             LogInfo(msg="[AMR] Web remains PREVIEW ONLY; no CAN or motor."),
             wait_localization,
@@ -142,6 +148,8 @@ def generate_launch_description():
         ]
 
     return LaunchDescription([
+        DeclareLaunchArgument("physical_auto", default_value="false",
+                              description="Allow web AUTO goal only when separate guarded CAN stack is ready"),
         DeclareLaunchArgument("map_file", default_value=str(MAP),
                               description="Existing saved occupancy map YAML"),
         DeclareLaunchArgument("rviz", default_value="true",
