@@ -35,6 +35,8 @@ class GuardedMotorMux(Node):
         self.auto_active_at = None
         self.manual_authorized = False
         self.manual_authorized_at = None
+        self.web_arm = False
+        self.web_arm_at = None
         self.depth_blocked = True
         self.depth_at = None
         self.motor = None
@@ -54,6 +56,7 @@ class GuardedMotorMux(Node):
                                  self.on_auto_active, 10)
         self.create_subscription(Bool, "/amr_manual/motion_authorized",
                                  self.on_manual_authorized, 10)
+        self.create_subscription(Bool, "/amr_web/arm_heartbeat", self.on_web_arm, 10)
         self.create_subscription(Bool, "/amr/depth_obstacle", self.on_depth, 10)
         self.create_subscription(String, "/amr_motor_state", self.on_motor, 10)
         for mode, side, topic in (
@@ -101,6 +104,10 @@ class GuardedMotorMux(Node):
     def on_manual_authorized(self, msg):
         self.manual_authorized = msg.data is True
         self.manual_authorized_at = time.monotonic()
+
+    def on_web_arm(self, msg):
+        self.web_arm = msg.data is True
+        self.web_arm_at = time.monotonic()
 
     def on_depth(self, msg):
         self.depth_blocked = msg.data is not False
@@ -175,6 +182,10 @@ class GuardedMotorMux(Node):
             self.fresh(self.manual_authorized_at, self.AGE, now)
             and self.manual_authorized if self.mode == "MANUAL" else
             self.fresh(self.auto_active_at, self.AGE, now) and self.auto_active)
+        arm_hold = (self.fresh(self.web_arm_at, self.AGE, now)
+                    and self.web_arm and self.mode == "AUTO")
+        # Pre-arm authorizes only a zero handshake; it never authorizes motion.
+        prearm = arm_hold and not active
         motor_fresh = self.fresh(self.motor_at, self.STATUS_AGE, now)
         motor_ok = motor_fresh and self.motor.get("fault") is False
         depth_ok = (self.fresh(self.depth_at, self.DEPTH_AGE, now)
@@ -184,7 +195,7 @@ class GuardedMotorMux(Node):
         reason = "OK"
         if not self.live:
             reason = "DRY_RUN"
-        elif not active:
+        elif not active and not prearm:
             reason = "NO_FRESH_MODE_SESSION"
         elif not no_conflicts:
             reason = "DUPLICATE_CAN_OWNER"
@@ -194,13 +205,22 @@ class GuardedMotorMux(Node):
             reason = "DEPTH_NOT_CLEAR_OR_STALE"
         elif not lift_ok:
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
-        elif not fresh or not valid:
+        elif not prearm and (not fresh or not valid):
             reason = "RPM_MISSING_OR_INVALID"
         if reason != "OK":
             self.reset()
             self.publish_output(False)
         else:
-            if self.phase == "DISARMED":
+            if prearm:
+                # No Nav2 goal: ARM state only, always ZERO on both wheels.
+                if not self.stopped(now):
+                    reason = "PREARM_WAIT_PHYSICAL_STOP"
+                    self.publish_output(False)
+                    self.reset()
+                else:
+                    self.phase = "ZERO_HANDSHAKE"
+                    self.publish_output(True, 0.0, 0.0)
+            elif self.phase == "DISARMED":
                 if not self.stopped(now):
                     reason = "WAIT_PHYSICAL_STOP"
                     self.publish_output(False)
@@ -238,7 +258,8 @@ class GuardedMotorMux(Node):
             "input_rpm": data, "input_fresh": fresh,
             "motor_stop_verified": self.stopped(now),
             "depth_clear": depth_ok, "lift_safe": lift_ok,
-            "live_enabled": self.live, "reason": reason,
+            "live_enabled": self.live, "prearm_zero_only": prearm,
+            "reason": reason,
         }
         self.status_pub.publish(String(data=json.dumps(report)))
         if reason != self.last_reason:
