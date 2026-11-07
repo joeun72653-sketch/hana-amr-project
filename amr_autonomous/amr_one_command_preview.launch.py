@@ -39,6 +39,7 @@ def generate_launch_description():
                  APP / "scripts" / "start_map_amcl_lifecycle.py",
                  APP / "scripts" / "mode_mux_dry_run.py",
                  APP / "scripts" / "check_activate_nav2.py",
+                 APP / "scripts" / "wait_for_amcl_tf.py",
                  STATIC / "index.html"):
         if not path.is_file():
             raise FileNotFoundError(f"[AMR] required file missing: {path}")
@@ -69,6 +70,9 @@ def generate_launch_description():
         "/usr/bin/python3", "-u",
         str(APP / "scripts" / "start_map_amcl_lifecycle.py"),
         "--timeout", "60"])
+    wait_localization = process("wait_for_amcl_localization", [
+        "/usr/bin/python3", "-u", str(APP / "scripts" / "wait_for_amcl_tf.py"),
+        "--timeout", "600", "--max-age", "2"])
     nav2 = process("mapex_nav2", [
         "ros2", "launch", "real_amr_lidar",
         "real_mapex_nav2.launch.py", "autostart:=true"])
@@ -102,29 +106,39 @@ def generate_launch_description():
     def after_lifecycle(event, context):
         if event.returncode != 0:
             return [
-                LogInfo(msg="[AMR] map/amcl lifecycle activation FAILED; shutting down"),
-                EmitEvent(event=Shutdown(reason="map or AMCL failed to activate"))
+                LogInfo(msg="[AMR] Map/AMCL activation failed. Preview stopping."),
+                EmitEvent(event=Shutdown(reason="Map/AMCL activation failed")),
             ]
         return [
-            LogInfo(msg="[AMR] Map Server + AMCL ACTIVE. Starting Nav2/RViz/phone map."),
+            LogInfo(msg="[AMR] Map/AMCL ACTIVE. Starting RViz and web BEFORE Nav2."),
+            rviz, phone, preview, auto_rpm, mux,
+            LogInfo(msg="[AMR] RViz: Set the REAL robot pose using 2D Pose Estimate."),
+            LogInfo(msg="[AMR] Web remains PREVIEW ONLY; no CAN or motor."),
+            wait_localization,
+        ]
+
+    def after_localization(event, context):
+        if event.returncode != 0:
+            return [
+                LogInfo(msg="[AMR] AMCL localization not ready. No Nav2/CAN; shutting down."),
+                EmitEvent(event=Shutdown(reason="AMCL localization unavailable")),
+            ]
+        return [
+            LogInfo(msg="[AMR] Fresh map->odom TF confirmed. Starting Nav2."),
             nav2,
             TimerAction(period=3.0, actions=[nav2_verify]),
-            LogInfo(msg="[AMR] Waiting for Nav2 Planner/Controller/Behavior/BT + Costmaps ACTIVE"),
-
-            LogInfo(msg="[AMR] NAVIGATION PREVIEW ONLY — CAN/ARM/LIFT NOT STARTED"),
         ]
 
     def after_nav2_verify(event, context):
         if event.returncode != 0:
             return [
-                LogInfo(msg="[AMR] Nav2 lifecycle validation FAILED. Stopping preview stack."),
-                EmitEvent(event=Shutdown(reason="Nav2 lifecycle not ready"))
+                LogInfo(msg="[AMR] Nav2 activation failed; preview stopping."),
+                EmitEvent(event=Shutdown(reason="Nav2 lifecycle not ready")),
             ]
         return [
-            LogInfo(msg="[AMR] Nav2 ALL ACTIVE. Starting RViz + mobile phone map."),
-            rpm_converter, rviz, phone, preview, auto_rpm, mux,
-            LogInfo(msg="[AMR] phone: http://<IPC_LAN_IP>:8000/ embedded map :8771"),
-            LogInfo(msg="[AMR] NAVIGATION PREVIEW ONLY - CAN/ARM/LIFT NOT STARTED"),
+            LogInfo(msg="[AMR] NAV2 READY. Starting request-only RPM diagnostic."),
+            rpm_converter,
+            LogInfo(msg="[AMR] PREVIEW ONLY - CAN/ARM/LIFT NOT STARTED"),
         ]
 
     return LaunchDescription([
@@ -148,6 +162,8 @@ def generate_launch_description():
         TimerAction(period=9.0, actions=[activate]),
         RegisterEventHandler(OnProcessExit(
             target_action=activate, on_exit=after_lifecycle)),
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_localization, on_exit=after_localization)),
         RegisterEventHandler(OnProcessExit(
             target_action=nav2_verify, on_exit=after_nav2_verify)),
     ])
