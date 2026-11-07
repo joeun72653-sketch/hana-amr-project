@@ -90,6 +90,7 @@ class MapNode(Node):
         self.auto_generation = 0
         self.auto_failure = None
         self.auto_distance = None
+        self.arm_heartbeat_at = None
         self.motor_state = None
         self.motor_at = None
         self.depth_blocked = True
@@ -145,6 +146,7 @@ class MapNode(Node):
                                  self.on_rviz_preview_goal, 10)
         self.planner = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
         self.navigator = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+        self.arm_pub = self.create_publisher(Bool, "/amr_web/arm_heartbeat", 10)
         self.auto_heartbeat_pub = self.create_publisher(
             Bool, "/amr_auto/navigation_active", 10)
         self.create_subscription(String, "/amr_motor_state",
@@ -313,10 +315,40 @@ class MapNode(Node):
             self.auto_heartbeat_at = time.monotonic()
         return {"auto_state": "RUNNING"}
 
+    def arm_request(self):
+        # ARM never commands motion: mux must enforce zero RPM and all interlocks.
+        self._motion_prerequisites(require_stopped=True)
+        with self.lock:
+            if self.auto_active:
+                raise ValueError("Stop AUTO before ARM")
+            self.arm_heartbeat_at = time.monotonic()
+        return {"arm_request": "ACCEPTED_ZERO_ONLY",
+                "message": "Zero-RPM ARM requested; confirm motor armed feedback"}
+
+    def arm_heartbeat(self):
+        with self.lock:
+            if self.arm_heartbeat_at is None:
+                raise ValueError("ARM not requested")
+            self.arm_heartbeat_at = time.monotonic()
+        return {"arm_request": "HEARTBEAT"}
+
+    def disarm_request(self):
+        self.stop_auto("Operator DISARM")
+        with self.lock:
+            self.arm_heartbeat_at = None
+        self.arm_pub.publish(Bool(data=False))
+        return {"arm_request": "DISARM_REQUESTED"}
+
     def auto_tick(self):
         with self.lock:
             running = self.auto_active
             heartbeat_at = self.auto_heartbeat_at
+            arm_at = self.arm_heartbeat_at
+        arm_live = (arm_at is not None and time.monotonic() - arm_at < 0.65)
+        if not arm_live and arm_at is not None:
+            with self.lock:
+                self.arm_heartbeat_at = None
+        self.arm_pub.publish(Bool(data=arm_live))
         if not running:
             self.auto_heartbeat_pub.publish(Bool(data=False))
             return
@@ -603,7 +635,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         endpoint = urlparse(self.path).path
         if endpoint not in ("/api/plan", "/api/mode", "/api/auto-rpm",
-                             "/api/auto/start", "/api/auto/stop", "/api/auto/heartbeat"):
+                             "/api/auto/start", "/api/auto/stop", "/api/auto/heartbeat",
+                             "/api/arm", "/api/arm/heartbeat", "/api/disarm"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -611,7 +644,13 @@ class Handler(BaseHTTPRequestHandler):
             if size < 1 or size > 4096:
                 raise ValueError("Invalid request length")
             payload = json.loads(self.rfile.read(size))
-            if endpoint == "/api/mode":
+            if endpoint == "/api/arm":
+                self.respond(200, self.server.node.arm_request())
+            elif endpoint == "/api/arm/heartbeat":
+                self.respond(200, self.server.node.arm_heartbeat())
+            elif endpoint == "/api/disarm":
+                self.respond(200, self.server.node.disarm_request())
+            elif endpoint == "/api/mode":
                 self.respond(200, self.server.node.select_mode_preview(payload))
             elif endpoint == "/api/auto-rpm":
                 self.respond(200, self.server.node.set_auto_rpm_request(payload))
