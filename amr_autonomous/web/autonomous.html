@@ -48,6 +48,8 @@ button:disabled{opacity:.45;cursor:not-allowed}pre{font:12px/1.5 monospace;white
 <select id="lift"><option value="none">리프트 동작 없음</option><option value="up">TOP 상승</option><option value="down">BOTTOM 하강</option><option value="target">목표 Pulse</option></select>
 <label for="pulse">목표 Pulse (0~2000)</label><input id="pulse" type="number" min="0" max="2000" step="1" value="1500" disabled>
 <button id="plan" class="primary">Nav2 경로 미리보기</button>
+<div style="display:flex;gap:8px;margin:8px 0"><button id="motorArm" type="button" style="flex:1">ARM (RPM 0)</button><button id="motorDisarm" type="button" style="flex:1;background:#fee2e2;color:#991b1b">DISARM</button></div>
+<p id="armStatus" class="muted" style="font-size:12px">ARM 대기 · 안전 조건 확인 필요</p>
 <button id="autoStart" disabled title="실구동 Launch와 모든 인터락이 준비된 경우에만 활성화">AUTO 목표까지 주행 시작</button>
 <button id="autoStop" style="background:#fee2e2;color:#991b1b">■ AUTO 중지</button>
 <p id="autoDriveStatus" class="muted" style="font-size:12px">실제 주행 제어 비활성 · 모터는 움직이지 않습니다.</p>
@@ -76,6 +78,34 @@ $('autoRpmNumber').oninput=()=>{
  if(Number.isFinite(value)&&value===30)$('autoRpmRange').value=clampAutoRpm(value);
 };
 let autoRunning=false,heartbeatBusy=false,autoHeartbeatTimer=null;
+let armHolding=false,armTimer=null;
+async function disarmMotor(){
+ armHolding=false;
+ if(armTimer){clearInterval(armTimer);armTimer=null;}
+ try{
+  const r=await fetch('/api/disarm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'DISARM rejected');
+  $('armStatus').textContent='DISARM 요청 완료 · 실제 모터 피드백 확인';
+ }catch(e){$('armStatus').textContent='DISARM 통신 실패: 하드웨어 E-Stop 확인 · '+e.message;}
+}
+$('motorArm').onclick=async()=>{
+ if(!confirm('바퀴를 들어 올리고 E-Stop과 통신단절 정지를 검증했나요? ARM은 RPM 0만 허용합니다.'))return;
+ try{
+  const r=await fetch('/api/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'ARM rejected');
+  armHolding=true;
+  if(armTimer)clearInterval(armTimer);
+  armTimer=setInterval(async()=>{
+   if(!armHolding)return;
+   try{
+    const r=await fetch('/api/arm/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(!r.ok)throw Error('ARM heartbeat rejected');
+   }catch(e){armHolding=false;clearInterval(armTimer);armTimer=null;$('armStatus').textContent='ARM heartbeat 실패 · 자동 차단 대기';}
+  },200);
+  $('armStatus').textContent='ARM 요청됨 · CAN ARMED 피드백 대기';
+ }catch(e){$('armStatus').textContent='ARM 거부: '+e.message;}
+};
+$('motorDisarm').onclick=()=>disarmMotor();
 async function stopAutonomous(message='AUTO STOP 요청'){
  autoRunning=false;
  if(autoHeartbeatTimer){clearInterval(autoHeartbeatTimer);autoHeartbeatTimer=null;}
@@ -116,8 +146,8 @@ window.addEventListener('message',event=>{
  if(event.origin!==parentOrigin||!event.data||event.data.type!=='AMR_AUTO_STOP')return;
  stopAutonomous('상위 관제 STOP/DISARM 요청');
 });
-window.addEventListener('pagehide',()=>{if(autoRunning)stopAutonomous('페이지 종료로 AUTO 중지 요청');});
-document.addEventListener('visibilitychange',()=>{if(document.hidden&&autoRunning)stopAutonomous('화면 비활성으로 AUTO 중지 요청');});
+window.addEventListener('pagehide',()=>{if(autoRunning)stopAutonomous('페이지 종료로 AUTO 중지 요청');if(armHolding)disarmMotor();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(autoRunning)stopAutonomous('화면 비활성으로 AUTO 중지 요청');if(armHolding)disarmMotor();}});
 $('autoRpmSave').onclick=async()=>{
  const raw=$('autoRpmNumber').value.trim();
  const value=Number(raw);
