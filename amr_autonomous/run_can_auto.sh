@@ -11,7 +11,7 @@ APP="$HOME/hana-amr-project-autonomous/amr_autonomous"
 REMOTE="$HOME/hana-amr-project-autonomous/amr_remote_client"
 PORT="/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG04BIQZ-if00-port0"
 CAMERA="$HOME/amr_websocket/amr_openvino_camera_depth_integrated.py"
-CAMERA_PY="$HOME/orbbec_depth_env/bin/python"
+CAMERA_PY="$HOME/yolo_openvino_env/bin/python"
 LIFT="$HOME/amr_lift/lift_websocket.py"
 LIFT_PY="$HOME/amr_lift/.venv/bin/python"
 for f in "$PORT" "$CAMERA" "$CAMERA_PY" "$LIFT" "$LIFT_PY" "$APP/scripts/guarded_motor_mux.py" "$REMOTE/amr_ros_wheel_rpm_can.py"; do
