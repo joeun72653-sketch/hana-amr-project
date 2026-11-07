@@ -20,8 +20,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--max-age", type=float, default=2.0)
+    parser.add_argument("--max-future", type=float, default=2.0,
+                        help="Allow bounded future-dated AMCL TF (transform_tolerance)")
     args = parser.parse_args()
-    if not 10 <= args.timeout <= 900 or not 0.1 <= args.max_age <= 10:
+    if (not 10 <= args.timeout <= 900 or not 0.1 <= args.max_age <= 10
+            or not 0.0 <= args.max_future <= 3.0):
         parser.error("Invalid timeout or TF age")
     rclpy.init()
     node = Node("amr_wait_for_localization_tf")
@@ -29,6 +32,7 @@ def main():
     listener = TransformListener(tf, node, spin_thread=False)
     deadline = time.monotonic() + args.timeout
     last_log = -10.0
+    last_rejection = "TF not received"
     success = False
     try:
         while time.monotonic() < deadline:
@@ -36,7 +40,7 @@ def main():
             elapsed = args.timeout - (deadline-time.monotonic())
             if elapsed-last_log >= 3:
                 print("[LOCALIZATION] Waiting for RViz 2D Pose Estimate / fresh map->odom TF...",
-                      flush=True)
+                      f" Last check: {last_rejection}", flush=True)
                 last_log = elapsed
             try:
                 t = tf.lookup_transform("map", "odom", Time())
@@ -46,12 +50,13 @@ def main():
                 values = (t.transform.translation.x, t.transform.translation.y,
                           t.transform.rotation.x, t.transform.rotation.y,
                           t.transform.rotation.z, t.transform.rotation.w)
-                if stamp > 0 and -0.1 <= age <= args.max_age and all(map(math.isfinite,values)):
+                if stamp > 0 and -args.max_future <= age <= args.max_age and all(map(math.isfinite,values)):
                     print(f"[LOCALIZATION READY] map->odom TF age={age:.3f}s", flush=True)
                     success = True
                     break
-            except Exception:
-                pass
+                last_rejection = f"stamp={stamp:.3f} now={now:.3f} age={age:.3f}s (allowed -{args.max_future:.1f}..{args.max_age:.1f}s)"
+            except Exception as exc:
+                last_rejection = str(exc)
         if not success:
             print("[LOCALIZATION FAILED] No fresh AMCL map->odom TF. "
                   "RViz 2D Pose Estimate required; CAN not started.", file=sys.stderr, flush=True)
