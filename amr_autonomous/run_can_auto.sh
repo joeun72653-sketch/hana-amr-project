@@ -18,9 +18,9 @@ for f in "$PORT" "$CAMERA" "$CAMERA_PY" "$LIFT" "$LIFT_PY" "$APP/scripts/guarded
   [[ -e "$f" ]] || { echo "[BLOCKED] Missing: $f"; exit 1; }
 done
 [[ -r "$PORT" && -w "$PORT" ]] || { echo "[BLOCKED] CAN port access denied"; exit 1; }
-if pgrep -af 'amr_ros_wheel_rpm_can.py|guarded_motor_mux.py|amr_openvino_camera_depth_integrated.py|lift_websocket.py' | grep -vE 'grep|run_can_auto.sh' >/dev/null; then
+if pgrep -af 'amr_ros_wheel_rpm_can.py|guarded_motor_mux.py' | grep -vE 'grep|run_can_auto.sh' >/dev/null; then
   echo "[BLOCKED] Existing motor/safety process; inspect duplicate owners:"
-  pgrep -af 'amr_ros_wheel_rpm_can.py|guarded_motor_mux.py|amr_openvino_camera_depth_integrated.py|lift_websocket.py'
+  pgrep -af 'amr_ros_wheel_rpm_can.py|guarded_motor_mux.py'
   exit 1
 fi
 if ! curl -fsS --max-time 3 http://127.0.0.1:8771/api/status | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["physical_auto_allowed"] is True, "Web server is preview-only"'; then
@@ -37,6 +37,18 @@ echo "Requires verified E-stop, drive-side link-loss stop, lifted wheels and sup
 read -r -p "Type START to allow real CAN motor output: " approval
 [[ "$approval" == START ]] || { echo "[CANCELED]"; exit 1; }
 pids=()
+if pgrep -af '[a]mr_openvino_camera_depth_integrated.py' >/dev/null; then
+  echo "[REUSE] Existing OpenVINO depth camera process; will not launch duplicate."
+else
+  echo "[START] Launching OpenVINO depth camera."
+  "$CAMERA_PY" -u "$CAMERA" & pids+=($!)
+fi
+if pgrep -af '[l]ift_websocket.py' >/dev/null; then
+  echo "[REUSE] Existing lift state WebSocket; will not launch duplicate."
+else
+  echo "[START] Launching lift state WebSocket."
+  "$LIFT_PY" -u "$LIFT" & pids+=($!)
+fi
 cleanup() {
   trap - EXIT INT TERM
   echo "[STOP] Stopping CAN stack; verify actual wheels stopped and use hardware E-stop if needed."
@@ -46,8 +58,6 @@ cleanup() {
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
-"$CAMERA_PY" -u "$CAMERA" & pids+=($!)
-"$LIFT_PY" -u "$LIFT" & pids+=($!)
 /usr/bin/python3 -u "$APP/scripts/guarded_motor_mux.py" --live-motor-output & pids+=($!)
 sleep 3
 /usr/bin/python3 -u "$REMOTE/amr_ros_wheel_rpm_can.py" --mux-input & pids+=($!)
