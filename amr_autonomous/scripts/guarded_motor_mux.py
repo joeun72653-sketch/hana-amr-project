@@ -14,13 +14,14 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from std_msgs.msg import Bool, Float64, String
+from std_msgs.msg import Bool, Float64, String, Int32
 
 
 class GuardedMotorMux(Node):
     AGE = 0.30
     STATUS_AGE = 0.45
     DEPTH_AGE = 0.30
+    LIDAR_AGE = 0.35
     MAX_MANUAL = 500.0
     MAX_AUTO = 30.0  # First live trial HARD CAP; do not raise before hardware validation
 
@@ -39,6 +40,8 @@ class GuardedMotorMux(Node):
         self.web_arm_at = None
         self.depth_blocked = True
         self.depth_at = None
+        self.lidar_mask = 255
+        self.lidar_at = None
         self.motor = None
         self.motor_at = None
         self.request = {k: [None, None] for k in ("MANUAL", "AUTO")}
@@ -58,6 +61,7 @@ class GuardedMotorMux(Node):
                                  self.on_manual_authorized, 10)
         self.create_subscription(Bool, "/amr_web/arm_heartbeat", self.on_web_arm, 10)
         self.create_subscription(Bool, "/amr/depth_obstacle", self.on_depth, 10)
+        self.create_subscription(Int32, "/lidar_safty_bitmask", self.on_lidar_mask, 10)
         self.create_subscription(String, "/amr_motor_state", self.on_motor, 10)
         for mode, side, topic in (
             ("MANUAL", 0, "/amr_manual/wheel_rpm_left_requested"),
@@ -112,6 +116,10 @@ class GuardedMotorMux(Node):
     def on_depth(self, msg):
         self.depth_blocked = msg.data is not False
         self.depth_at = time.monotonic()
+
+    def on_lidar_mask(self, msg):
+        self.lidar_mask = int(msg.data) if 0 <= int(msg.data) <= 255 else 255
+        self.lidar_at = time.monotonic()
 
     def on_motor(self, msg):
         try:
@@ -193,11 +201,21 @@ class GuardedMotorMux(Node):
         # independent directional sensing is integrated and validated.
         depth_ok = (self.fresh(self.depth_at, self.DEPTH_AGE, now)
                     and not self.depth_blocked)
+        lidar_fresh = self.fresh(self.lidar_at, self.LIDAR_AGE, now)
+        mask = self.lidar_mask if lidar_fresh else 255
+        # Advisory bitmask never overrides depth interlock or grants motion.
         directional_clearance = {
-            "forward": depth_ok,
-            "reverse": depth_ok,
-            "pivot": depth_ok,
-            "reason": "rear_and_swept_path_not_verified" if not depth_ok else "depth_clear",
+            "forward": depth_ok and not bool(mask & 1),
+            "reverse": depth_ok and not bool(mask & 2),
+            "pivot_left": depth_ok and not bool(mask & 4),
+            "pivot_right": depth_ok and not bool(mask & 8),
+            "forward_left": depth_ok and not bool(mask & 16),
+            "forward_right": depth_ok and not bool(mask & 32),
+            "reverse_left": depth_ok and not bool(mask & 64),
+            "reverse_right": depth_ok and not bool(mask & 128),
+            "lidar_mask": mask, "lidar_fresh": lidar_fresh,
+            "reason": "DEPTH_BLOCKED_OR_STALE" if not depth_ok else
+                      ("LIDAR_STALE_OR_INVALID" if not lidar_fresh else "ADVISORY_ONLY"),
         }
         no_conflicts = self.sole_publisher() if self.live else True
         lift_ok = self.safe_lift(now)
@@ -212,6 +230,8 @@ class GuardedMotorMux(Node):
             reason = "MOTOR_STATE_MISSING_OR_FAULT"
         elif not depth_ok:
             reason = "DEPTH_NOT_CLEAR_OR_STALE"
+        elif not lidar_fresh or mask == 255:
+            reason = "LIDAR_NOT_CLEAR_OR_STALE"
         elif not lift_ok:
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
         elif not prearm and (not fresh or not valid):
