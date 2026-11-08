@@ -85,6 +85,7 @@ class MapNode(Node):
         self.lock = threading.RLock()
         self.allow_physical_auto = bool(allow_physical_auto)
         self.bench_directional = os.environ.get("AMR_BENCH_DEPTH_DIRECTIONAL") == "1"
+        self.rviz_bench_goal = os.environ.get("AMR_RVIZ_GOAL_BENCH") == "1"
         self.auto_active = False
         self.auto_handle = None
         self.auto_started = None
@@ -238,6 +239,8 @@ class MapNode(Node):
         return self._current_tf_position()
 
     def start_auto(self):
+        if self.rviz_bench_goal:
+            raise ValueError("RViz bench goal mode: use RViz 2D Goal Pose")
         x_now, y_now = self._motion_prerequisites(require_stopped=True)
         with self.lock:
             if self.auto_active or self.auto_state in ("STARTING", "RUNNING"):
@@ -335,6 +338,8 @@ class MapNode(Node):
         return {"auto_state": "RUNNING"}
 
     def arm_request(self):
+        if self.rviz_bench_goal:
+            raise ValueError("RViz bench goal mode: ARM handled by RViz bridge")
         # ARM never commands motion: mux must enforce zero RPM and all interlocks.
         self._motion_prerequisites(require_stopped=True)
         with self.lock:
@@ -359,6 +364,8 @@ class MapNode(Node):
         return {"arm_request": "DISARM_REQUESTED"}
 
     def auto_tick(self):
+        if self.rviz_bench_goal:
+            return  # RViz bridge is sole ARM/AUTO heartbeat owner in bench mode.
         with self.lock:
             running = self.auto_active
             heartbeat_at = self.auto_heartbeat_at
