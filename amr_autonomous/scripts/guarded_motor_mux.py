@@ -188,8 +188,17 @@ class GuardedMotorMux(Node):
         prearm = arm_hold and not active
         motor_fresh = self.fresh(self.motor_at, self.STATUS_AGE, now)
         motor_ok = motor_fresh and self.motor.get("fault") is False
+        # Front-only depth cannot certify rear or swept-path clearance.
+        # A blocked or stale reading must inhibit every direction until
+        # independent directional sensing is integrated and validated.
         depth_ok = (self.fresh(self.depth_at, self.DEPTH_AGE, now)
                     and not self.depth_blocked)
+        directional_clearance = {
+            "forward": depth_ok,
+            "reverse": depth_ok,
+            "pivot": depth_ok,
+            "reason": "rear_and_swept_path_not_verified" if not depth_ok else "depth_clear",
+        }
         no_conflicts = self.sole_publisher() if self.live else True
         lift_ok = self.safe_lift(now)
         reason = "OK"
@@ -257,7 +266,7 @@ class GuardedMotorMux(Node):
             "first_trial_hard_cap_rpm": self.MAX_AUTO,
             "input_rpm": data, "input_fresh": fresh,
             "motor_stop_verified": self.stopped(now),
-            "depth_clear": depth_ok, "lift_safe": lift_ok,
+            "depth_clear": depth_ok, "directional_clearance": directional_clearance, "lift_safe": lift_ok,
             "live_enabled": self.live, "prearm_zero_only": prearm,
             "reason": reason,
         }
