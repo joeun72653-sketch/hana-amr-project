@@ -250,7 +250,13 @@ class GuardedMotorMux(Node):
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
         elif not prearm and (not fresh or not valid):
             reason = "RPM_MISSING_OR_INVALID"
-        if reason != "OK":
+        if reason == "DEPTH_FORWARD_BLOCKED" and self.phase == "ACTIVE":
+            # Keep the established AUTO session armed at ZERO while the
+            # forward-only depth gate blocks a fresh Nav2 command.
+            # Do not revoke CAN authorization and force a re-arm cycle.
+            # All other faults/stale inputs still disarm as before.
+            self.publish_output(True, 0.0, 0.0)
+        elif reason != "OK":
             self.reset()
             self.publish_output(False)
         else:
