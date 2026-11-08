@@ -113,7 +113,11 @@ class RvizBenchBridge(Node):
                 self.state = "IDLE"
                 self.auto_pub.publish(Bool(data=False))
             else:
-                self.stop("Goal result: " + str(status))
+                self.get_logger().warning("Nav2 goal ended; holding zero-only ARM: %s" % status)
+                self.goal_handle = None
+                self.goal = None
+                self.state = "IDLE"
+                self.auto_pub.publish(Bool(data=False))
         except Exception as exc:
             self.stop("Goal error: " + str(exc))
 
