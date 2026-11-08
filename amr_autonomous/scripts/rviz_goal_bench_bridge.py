@@ -23,7 +23,7 @@ class RvizBenchBridge(Node):
         super().__init__("amr_rviz_bench_goal_bridge")
         self.state = "IDLE"
         self.goal = None
-        self.handle = None
+        self.goal_handle = None
         self.started = None
         self.motor = None
         self.motor_at = None
@@ -96,7 +96,7 @@ class RvizBenchBridge(Node):
             if not handle.accepted:
                 self.stop("Nav2 rejected goal")
                 return
-            self.handle = handle
+            self.goal_handle = handle
             self.state = "RUNNING"
             handle.get_result_async().add_done_callback(self.on_result)
             self.get_logger().info("Nav2 goal accepted; continuous AUTO authorization")
@@ -115,9 +115,9 @@ class RvizBenchBridge(Node):
         self.state = "STOPPED"
         self.auto_pub.publish(Bool(data=False))
         self.arm_pub.publish(Bool(data=False))
-        if self.handle is not None:
-            self.handle.cancel_goal_async()
-            self.handle = None
+        if self.goal_handle is not None:
+            self.goal_handle.cancel_goal_async()
+            self.goal_handle = None
 
     def shutdown(self):
         self.stop("Operator bridge shutdown")
