@@ -25,10 +25,11 @@ class GuardedMotorMux(Node):
     MAX_MANUAL = 500.0
     MAX_AUTO = 30.0  # First live trial HARD CAP; do not raise before hardware validation
 
-    def __init__(self, live, bench_directional=False):
+    def __init__(self, live, bench_directional=False, bench_lidar_directional=False):
         super().__init__("amr_guarded_motor_mux")
         self.live = live
         self.bench_directional = bench_directional
+        self.bench_lidar_directional = bench_lidar_directional
         self.mode = "MANUAL"
         self.mode_at = time.monotonic()
         self.auto_limit = 30.0
@@ -245,6 +246,27 @@ class GuardedMotorMux(Node):
             (left < -1e-9 and right > 1e-9) or
             (left > 1e-9 and right < -1e-9))
         bench_escape = self.bench_directional and (reverse_arc or pivot)
+        eps = 1e-6
+        if not valid:
+            requested_direction = "invalid"
+        elif abs(left) < eps and abs(right) < eps:
+            requested_direction = "stop"
+        elif pivot:
+            requested_direction = "pivot_left" if left < 0 else "pivot_right"
+        elif left >= 0 and right >= 0:
+            requested_direction = ("forward" if abs(left-right) < eps else
+                                   "forward_left" if left < right else "forward_right")
+        elif left <= 0 and right <= 0:
+            requested_direction = ("reverse" if abs(left-right) < eps else
+                                   "reverse_left" if left > right else "reverse_right")
+        else:
+            requested_direction = "mixed_or_arc"
+        # Project-defined bit mapping, not a verified safety scanner field.
+        bit_for_direction = dict(zip(directions, bits))
+        lidar_direction_blocked = (
+            self.bench_lidar_directional and requested_direction != "stop"
+            and (not lidar_fresh or requested_direction not in bit_for_direction
+                 or bool(mask & bit_for_direction[requested_direction])))
         # Preserve Nav2-requested RPM continuously. Do not inject timed
         # reverse/pivot commands or invent a trajectory in the motor mux.
         no_conflicts = self.sole_publisher() if self.live else True
@@ -264,11 +286,15 @@ class GuardedMotorMux(Node):
             reason = "DEPTH_FORWARD_BLOCKED"
         elif not self.bench_directional and (not lidar_fresh or mask == 255):
             reason = "LIDAR_NOT_CLEAR_OR_STALE"
+        elif self.bench_lidar_directional and not lidar_fresh:
+            reason = "LIDAR_DIRECTIONAL_STALE"
         elif not lift_ok:
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
         elif not prearm and (not fresh or not valid):
             reason = "RPM_MISSING_OR_INVALID"
-        if reason == "DEPTH_FORWARD_BLOCKED" and self.phase == "ACTIVE":
+        if reason == "OK" and lidar_direction_blocked:
+            reason = "LIDAR_DIRECTION_BLOCKED"
+        if reason in ("DEPTH_FORWARD_BLOCKED", "LIDAR_DIRECTION_BLOCKED") and self.phase == "ACTIVE":
             # Keep the established AUTO session armed at ZERO while the
             # forward-only depth gate blocks a fresh Nav2 command.
             # Do not revoke CAN authorization and force a re-arm cycle.
@@ -326,6 +352,9 @@ class GuardedMotorMux(Node):
             "motor_stop_verified": self.stopped(now),
             "depth_clear": depth_ok, "bench_directional": self.bench_directional,
             "bench_escape_candidate": bench_escape,
+            "bench_lidar_directional": self.bench_lidar_directional,
+            "lidar_requested_direction": requested_direction,
+            "lidar_direction_blocked": lidar_direction_blocked,
             "nav2_requested_direction": (
                 "forward" if valid and left > 0 and right > 0 else
                 "reverse" if reverse and abs(left-right) < 1e-6 else
@@ -349,9 +378,13 @@ def main():
                    help="Explicit hardware enable; requires separate CAN --mux-input node")
     p.add_argument("--bench-depth-directional", action="store_true",
                    help="Raised wheels ONLY: allow reverse/pivot with fresh blocked depth; no LiDAR requirement")
+    p.add_argument("--bench-lidar-directional", action="store_true",
+                   help="Raised wheels only: gate RPM with fresh 8-bit LiDAR mask")
     args = p.parse_args()
+    if args.bench_lidar_directional and not args.bench_depth_directional:
+        p.error("--bench-lidar-directional requires --bench-depth-directional")
     rclpy.init()
-    node = GuardedMotorMux(args.live_motor_output, args.bench_depth_directional)
+    node = GuardedMotorMux(args.live_motor_output, args.bench_depth_directional, args.bench_lidar_directional)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
