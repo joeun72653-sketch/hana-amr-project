@@ -205,19 +205,31 @@ class GuardedMotorMux(Node):
         lidar_fresh = self.fresh(self.lidar_at, self.LIDAR_AGE, now)
         mask = self.lidar_mask if lidar_fresh else 255
         # Advisory bitmask never overrides depth interlock or grants motion.
+        # Eight-direction availability is a command-gate diagnostic, not
+        # proof of obstacle-free rear/side space. Bench mode ignores LiDAR.
+        directions = ("forward", "reverse", "pivot_left", "pivot_right",
+                      "forward_left", "forward_right", "reverse_left", "reverse_right")
+        bits = (1, 2, 4, 8, 16, 32, 64, 128)
         directional_clearance = {
-            "forward": depth_ok and not bool(mask & 1),
-            "reverse": depth_ok and not bool(mask & 2),
-            "pivot_left": depth_ok and not bool(mask & 4),
-            "pivot_right": depth_ok and not bool(mask & 8),
-            "forward_left": depth_ok and not bool(mask & 16),
-            "forward_right": depth_ok and not bool(mask & 32),
-            "reverse_left": depth_ok and not bool(mask & 64),
-            "reverse_right": depth_ok and not bool(mask & 128),
-            "lidar_mask": mask, "lidar_fresh": lidar_fresh,
-            "reason": "DEPTH_BLOCKED_OR_STALE" if not depth_ok else
-                      ("LIDAR_STALE_OR_INVALID" if not lidar_fresh else "ADVISORY_ONLY"),
+            name: (depth_ok if self.bench_directional else
+                   depth_ok and lidar_fresh and not bool(mask & bit))
+            for name, bit in zip(directions, bits)
         }
+        if self.bench_directional and depth_fresh and self.depth_blocked:
+            directional_clearance.update({
+                "reverse": True, "pivot_left": True, "pivot_right": True,
+            })
+        directional_clearance.update({
+            "lidar_mask": mask, "lidar_fresh": lidar_fresh,
+            "reason": ("DEPTH_STALE" if not depth_fresh else
+                       "DEPTH_BLOCKED_BENCH_REVERSE_PIVOT_ONLY"
+                       if self.bench_directional and self.depth_blocked else
+                       "DEPTH_CLEAR_BENCH_ALL_DIRECTIONS"
+                       if self.bench_directional else
+                       "DEPTH_BLOCKED_OR_STALE" if not depth_ok else
+                       "LIDAR_STALE_OR_INVALID" if not lidar_fresh else
+                       "ADVISORY_ONLY"),
+        })
         # RAISED-WHEELS BENCH ONLY: front depth does not establish rear/side clearance.
         # Permit pure reverse or equal-and-opposite pivot requests, not arcs.
         left, right = data
