@@ -215,10 +215,16 @@ class MapNode(Node):
             if self.motor_at is None or now - self.motor_at > 0.45 or not self.motor_state:
                 raise ValueError("CAN motor state missing or stale")
             s = self.motor_state
-            if s.get("fault") is not False or s.get("stop_verified") is not True:
-                raise ValueError("CAN fault or stop not verified")
-            if require_stopped and (s.get("applied") != [0, 0] or s.get("actual") != [0, 0]):
-                raise ValueError("Wheels must be stopped before AUTO")
+            if s.get("fault") is not False:
+                raise ValueError("CAN fault")
+            # Stop verification is an ARM/initial-start requirement, not an
+            # invariant while the wheels are moving or the driver is braking.
+            # Requiring it on every 20Hz AUTO tick spuriously cancels Nav2.
+            if require_stopped:
+                if s.get("stop_verified") is not True:
+                    raise ValueError("CAN stop not verified before AUTO")
+                if s.get("applied") != [0, 0] or s.get("actual") != [0, 0]:
+                    raise ValueError("Wheels must be stopped before AUTO")
             if self.mux_at is None or now - self.mux_at > 0.45 or not self.mux_state:
                 raise ValueError("Guarded motor mux missing")
             if self.mux_state.get("live_enabled") is not True:
