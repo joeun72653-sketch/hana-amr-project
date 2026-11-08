@@ -320,6 +320,11 @@ class GuardedMotorMux(Node):
             "motor_stop_verified": self.stopped(now),
             "depth_clear": depth_ok, "bench_directional": self.bench_directional,
             "bench_escape_candidate": bench_escape,
+            "nav2_requested_direction": (
+                "forward" if valid and left > 0 and right > 0 else
+                "reverse" if reverse else
+                "pivot" if pivot else
+                "mixed_or_arc" if valid else "invalid"),
             "directional_clearance": directional_clearance, "lift_safe": lift_ok,
             "live_enabled": self.live, "prearm_zero_only": prearm,
             "reason": reason,
