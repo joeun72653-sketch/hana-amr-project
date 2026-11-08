@@ -553,7 +553,31 @@ class MapNode(Node):
             display_age = ((time.monotonic() - self.initial_pose_at)
                            if awaiting_amcl else age)
             stale = awaiting_amcl or age is None or age >= 2
-            return {"pose": display_pose,
+            # Read-only reasons for the operator; never authorize motion here.
+            blockers = []
+            if self.auto_state not in ("STARTING", "RUNNING"):
+                blockers.append("AUTO_NOT_RUNNING")
+            if stale:
+                blockers.append("AMCL_POSE_STALE")
+            if self.depth_at is None or now - self.depth_at > 0.30:
+                blockers.append("DEPTH_DATA_STALE")
+            elif self.depth_blocked:
+                blockers.append("DEPTH_OBSTACLE")
+            if not localization["tf_map_base_fresh"]:
+                blockers.append("MAP_BASE_TF_STALE")
+            if not localization["scan_fresh"]:
+                blockers.append("SCAN_STALE")
+            if not localization["odom_fresh"]:
+                blockers.append("ODOM_STALE")
+            if self.mux_at is None or now - self.mux_at > 0.45:
+                blockers.append("MUX_STATUS_STALE")
+            elif not self.mux_state or self.mux_state.get("live_enabled") is not True:
+                blockers.append("MUX_NOT_LIVE")
+            if self.motor_at is None or now - self.motor_at > 0.45:
+                blockers.append("MOTOR_STATUS_STALE")
+            elif not self.motor_state or self.motor_state.get("fault") is not False:
+                blockers.append("MOTOR_FAULT_OR_UNKNOWN")
+            return {"motion_blockers": blockers, "pose": display_pose,
                     "pose_source": "initialpose_pending_amcl" if awaiting_amcl else ("amcl" if self.pose is not None else "none"),
                     "pose_age_sec": round(display_age, 2) if display_age is not None else None,
                     "pose_stale": stale,
