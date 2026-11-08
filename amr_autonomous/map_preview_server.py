@@ -18,7 +18,8 @@ from urllib.parse import urlparse
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
-from nav_msgs.msg import OccupancyGrid, Path as NavPath
+from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
+from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker
 from std_msgs.msg import String, Float64, Bool
 from tf2_ros import Buffer, TransformListener
@@ -101,6 +102,9 @@ class MapNode(Node):
         self.pose = None
         self.pose_at = None
         self.pose_msg_stamp = None
+        self.pose_covariance_xy = None
+        self.scan_at = None
+        self.odom_at = None
         self.initial_pose = None
         self.initial_pose_at = None
         self.preview = []
@@ -117,6 +121,10 @@ class MapNode(Node):
         # sample even when localization does not publish again while stopped.
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
                                  self.pose_callback, map_qos)
+        self.create_subscription(LaserScan, "/scan_slam",
+                                 self.scan_callback, qos_profile_sensor_data)
+        self.create_subscription(Odometry, "/lidar_icp/odom",
+                                 self.odom_callback, qos_profile_sensor_data)
         # RViz 2D Pose Estimate publishes /initialpose. Listen-only: do NOT
         # re-publish it or change the robot pose from this web application.
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose",
@@ -366,11 +374,20 @@ class MapNode(Node):
         with self.lock:
             self.grid = message
 
+    def scan_callback(self, message):
+        with self.lock:
+            self.scan_at = time.monotonic()
+
+    def odom_callback(self, message):
+        with self.lock:
+            self.odom_at = time.monotonic()
+
     def pose_callback(self, message):
         p = message.pose.pose
         with self.lock:
             self.pose = [p.position.x, p.position.y, yaw(p.orientation)]
             self.pose_at = time.monotonic()
+            self.pose_covariance_xy = [float(message.pose.covariance[0]), float(message.pose.covariance[7])]
             self.pose_msg_stamp = [message.header.stamp.sec,
                                    message.header.stamp.nanosec]
 
@@ -517,6 +534,16 @@ class MapNode(Node):
     def status(self):
         localization = self._localization_diagnostics()
         with self.lock:
+            now = time.monotonic()
+            scan_age = now - self.scan_at if self.scan_at is not None else None
+            odom_age = now - self.odom_at if self.odom_at is not None else None
+            localization.update({
+                "scan_age_sec": round(scan_age, 3) if scan_age is not None else None,
+                "odom_age_sec": round(odom_age, 3) if odom_age is not None else None,
+                "scan_fresh": scan_age is not None and scan_age < 0.5,
+                "odom_fresh": odom_age is not None and odom_age < 0.5,
+                "amcl_covariance_xy": self.pose_covariance_xy,
+            })
             age = time.monotonic() - self.pose_at if self.pose_at is not None else None
             # On a new RViz initialization request, display its requested map
             # location immediately. It is NOT a verified AMCL estimate.
@@ -535,8 +562,8 @@ class MapNode(Node):
                         **localization,
                         "amcl_pose_fresh": not stale,
                         "initial_pose_pending_amcl": awaiting_amcl,
-                        "localization_motion_ready": not stale and localization["tf_map_base_fresh"],
-                        "note": "TF freshness does not replace a fresh AMCL estimate; no safety interlocks bypassed."
+                        "localization_motion_ready": not stale and localization["tf_map_base_fresh"] and localization["scan_fresh"] and localization["odom_fresh"],
+                        "note": "Fresh scan/odom/TF do not replace AMCL scan matching; no motion interlocks bypassed."
                     },
                     "map_ready": self.grid is not None,
                     "planner_ready": self.planner.server_is_ready(),
