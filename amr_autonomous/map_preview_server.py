@@ -497,7 +497,25 @@ class MapNode(Node):
                 "motor_output_enabled": self.auto_active and self.allow_physical_auto,
                 "message": "RPM request updated; guarded CAN mux applies only during authorized AUTO goal."}
 
+    def _localization_diagnostics(self):
+        """Read-only diagnostics; a fresh TF alone never authorizes motion."""
+        out = {"tf_map_base_fresh": False, "tf_map_base_age_sec": None,
+               "tf_map_base_error": None}
+        try:
+            transform = self.tf_buffer.lookup_transform("map", "base_link", Time())
+            stamp = transform.header.stamp
+            stamp_sec = stamp.sec + stamp.nanosec * 1e-9
+            age = self.get_clock().now().nanoseconds * 1e-9 - stamp_sec
+            out["tf_map_base_age_sec"] = round(age, 3)
+            out["tf_map_base_fresh"] = stamp_sec > 0 and -0.1 <= age <= 0.8
+            if not out["tf_map_base_fresh"]:
+                out["tf_map_base_error"] = "TF timestamp outside accepted window"
+        except Exception as exc:
+            out["tf_map_base_error"] = type(exc).__name__
+        return out
+
     def status(self):
+        localization = self._localization_diagnostics()
         with self.lock:
             age = time.monotonic() - self.pose_at if self.pose_at is not None else None
             # On a new RViz initialization request, display its requested map
@@ -513,6 +531,13 @@ class MapNode(Node):
                     "pose_age_sec": round(display_age, 2) if display_age is not None else None,
                     "pose_stale": stale,
                     "pose_msg_stamp": self.pose_msg_stamp,
+                    "localization_diagnostics": {
+                        **localization,
+                        "amcl_pose_fresh": not stale,
+                        "initial_pose_pending_amcl": awaiting_amcl,
+                        "localization_motion_ready": not stale and localization["tf_map_base_fresh"],
+                        "note": "TF freshness does not replace a fresh AMCL estimate; no safety interlocks bypassed."
+                    },
                     "map_ready": self.grid is not None,
                     "planner_ready": self.planner.server_is_ready(),
                     "path": self.preview,
