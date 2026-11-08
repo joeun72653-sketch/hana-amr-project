@@ -363,7 +363,15 @@ class MapNode(Node):
             running = self.auto_active
             heartbeat_at = self.auto_heartbeat_at
             arm_at = self.arm_heartbeat_at
-        arm_live = (arm_at is not None and time.monotonic() - arm_at < 0.65)
+        now = time.monotonic()
+        # An accepted AUTO goal is an ongoing explicit motor authorization,
+        # provided its independent phone heartbeat remains fresh. The separate
+        # ARM-button heartbeat may stop after the goal begins; do not spuriously
+        # emit False to CAN during otherwise healthy AUTO operation.
+        auto_live = (running and heartbeat_at is not None
+                     and 0 <= now - heartbeat_at < 0.65)
+        arm_live = ((arm_at is not None and 0 <= now - arm_at < 0.65)
+                    or auto_live)
         if not arm_live and arm_at is not None:
             with self.lock:
                 self.arm_heartbeat_at = None
