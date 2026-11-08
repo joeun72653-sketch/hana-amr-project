@@ -286,13 +286,13 @@ class GuardedMotorMux(Node):
             reason = "DEPTH_FORWARD_BLOCKED"
         elif not self.bench_directional and (not lidar_fresh or mask == 255):
             reason = "LIDAR_NOT_CLEAR_OR_STALE"
-        elif self.bench_lidar_directional and not lidar_fresh:
+        elif self.bench_lidar_directional and not lidar_fresh and not prearm:
             reason = "LIDAR_DIRECTIONAL_STALE"
         elif not lift_ok:
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
         elif not prearm and (not fresh or not valid):
             reason = "RPM_MISSING_OR_INVALID"
-        if reason == "OK" and lidar_direction_blocked:
+        if reason == "OK" and not prearm and lidar_direction_blocked:
             reason = "LIDAR_DIRECTION_BLOCKED"
         if reason in ("DEPTH_FORWARD_BLOCKED", "LIDAR_DIRECTION_BLOCKED") and self.phase == "ACTIVE":
             # Keep the established AUTO session armed at ZERO while the
@@ -355,6 +355,7 @@ class GuardedMotorMux(Node):
             "bench_lidar_directional": self.bench_lidar_directional,
             "lidar_requested_direction": requested_direction,
             "lidar_direction_blocked": lidar_direction_blocked,
+            "lidar_prearm_zero_only": bool(prearm and not lidar_fresh),
             "nav2_requested_direction": (
                 "forward" if valid and left > 0 and right > 0 else
                 "reverse" if reverse and abs(left-right) < 1e-6 else
