@@ -202,6 +202,7 @@ class GuardedMotorMux(Node):
         # independent directional sensing is integrated and validated.
         depth_ok = (self.fresh(self.depth_at, self.DEPTH_AGE, now)
                     and not self.depth_blocked)
+        depth_fresh = self.fresh(self.depth_at, self.DEPTH_AGE, now)
         lidar_fresh = self.fresh(self.lidar_at, self.LIDAR_AGE, now)
         mask = self.lidar_mask if lidar_fresh else 255
         # Advisory bitmask never overrides depth interlock or grants motion.
@@ -238,7 +239,6 @@ class GuardedMotorMux(Node):
             (left < -1e-9 and right > 1e-9) or
             (left > 1e-9 and right < -1e-9))
         bench_escape = self.bench_directional and (reverse or pivot)
-        depth_fresh = self.fresh(self.depth_at, self.DEPTH_AGE, now)
         # Preserve Nav2-requested RPM continuously. Do not inject timed
         # reverse/pivot commands or invent a trajectory in the motor mux.
         no_conflicts = self.sole_publisher() if self.live else True
