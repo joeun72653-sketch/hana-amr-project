@@ -25,9 +25,10 @@ class GuardedMotorMux(Node):
     MAX_MANUAL = 500.0
     MAX_AUTO = 30.0  # First live trial HARD CAP; do not raise before hardware validation
 
-    def __init__(self, live):
+    def __init__(self, live, bench_directional=False):
         super().__init__("amr_guarded_motor_mux")
         self.live = live
+        self.bench_directional = bench_directional
         self.mode = "MANUAL"
         self.mode_at = time.monotonic()
         self.auto_limit = 30.0
@@ -217,6 +218,15 @@ class GuardedMotorMux(Node):
             "reason": "DEPTH_BLOCKED_OR_STALE" if not depth_ok else
                       ("LIDAR_STALE_OR_INVALID" if not lidar_fresh else "ADVISORY_ONLY"),
         }
+        # RAISED-WHEELS BENCH ONLY: front depth does not establish rear/side clearance.
+        # Permit pure reverse or equal-and-opposite pivot requests, not arcs.
+        left, right = data
+        reverse = valid and left < -1e-9 and right < -1e-9
+        pivot = valid and abs(left + right) < 1e-6 and (
+            (left < -1e-9 and right > 1e-9) or
+            (left > 1e-9 and right < -1e-9))
+        bench_escape = self.bench_directional and (reverse or pivot)
+        depth_fresh = self.fresh(self.depth_at, self.DEPTH_AGE, now)
         no_conflicts = self.sole_publisher() if self.live else True
         lift_ok = self.safe_lift(now)
         reason = "OK"
@@ -228,9 +238,11 @@ class GuardedMotorMux(Node):
             reason = "DUPLICATE_CAN_OWNER"
         elif not motor_ok:
             reason = "MOTOR_STATE_MISSING_OR_FAULT"
-        elif not depth_ok:
-            reason = "DEPTH_NOT_CLEAR_OR_STALE"
-        elif not lidar_fresh or mask == 255:
+        elif not depth_fresh:
+            reason = "DEPTH_NOT_FRESH"
+        elif not depth_ok and not (prearm or bench_escape):
+            reason = "DEPTH_FORWARD_BLOCKED"
+        elif not self.bench_directional and (not lidar_fresh or mask == 255):
             reason = "LIDAR_NOT_CLEAR_OR_STALE"
         elif not lift_ok:
             reason = "LIFT_NOT_CONFIRMED_STOPPED"
@@ -286,7 +298,9 @@ class GuardedMotorMux(Node):
             "first_trial_hard_cap_rpm": self.MAX_AUTO,
             "input_rpm": data, "input_fresh": fresh,
             "motor_stop_verified": self.stopped(now),
-            "depth_clear": depth_ok, "directional_clearance": directional_clearance, "lift_safe": lift_ok,
+            "depth_clear": depth_ok, "bench_directional": self.bench_directional,
+            "bench_escape_candidate": bench_escape,
+            "directional_clearance": directional_clearance, "lift_safe": lift_ok,
             "live_enabled": self.live, "prearm_zero_only": prearm,
             "reason": reason,
         }
@@ -300,9 +314,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--live-motor-output", action="store_true",
                    help="Explicit hardware enable; requires separate CAN --mux-input node")
+    p.add_argument("--bench-depth-directional", action="store_true",
+                   help="Raised wheels ONLY: allow reverse/pivot with fresh blocked depth; no LiDAR requirement")
     args = p.parse_args()
     rclpy.init()
-    node = GuardedMotorMux(args.live_motor_output)
+    node = GuardedMotorMux(args.live_motor_output, args.bench_depth_directional)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
