@@ -34,14 +34,14 @@ class RvizBenchBridge(Node):
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.arm_pub = self.create_publisher(Bool, "/amr_web/arm_heartbeat", 10)
         self.auto_pub = self.create_publisher(Bool, "/amr_auto/navigation_active", 10)
-        self.create_subscription(PoseStamped, "/goal_pose", self.on_goal, 10)
+        self.create_subscription(PoseStamped, "/amr_rviz/goal_pose", self.on_goal, 10)
         self.create_subscription(String, "/amr_motor_state", self.on_motor, 10)
         self.create_subscription(Bool, "/amr/depth_obstacle",
                                  lambda m: setattr(self, "depth_at", time.monotonic()), 10)
         self.client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self.create_timer(0.05, self.tick)
         self.get_logger().warning(
-            "RAISED WHEELS ONLY. RViz 2D Goal Pose accepted; Ctrl+C disarms. "
+            "RAISED WHEELS ONLY. RViz Goal tool topic must be /amr_rviz/goal_pose; Ctrl+C disarms. "
             "Never run simultaneously with web AUTO.")
 
     def on_motor(self, msg):
