@@ -8,6 +8,7 @@ interlocks; this web server never directly publishes CAN RPM or lift commands.
 from __future__ import annotations
 
 import json
+import os
 import math
 import threading
 import time
@@ -83,6 +84,7 @@ class MapNode(Node):
         super().__init__("amr_qr_map_preview")
         self.lock = threading.RLock()
         self.allow_physical_auto = bool(allow_physical_auto)
+        self.bench_directional = os.environ.get("AMR_BENCH_DEPTH_DIRECTIONAL") == "1"
         self.auto_active = False
         self.auto_handle = None
         self.auto_started = None
@@ -221,8 +223,11 @@ class MapNode(Node):
                 raise ValueError("Guarded motor mux missing")
             if self.mux_state.get("live_enabled") is not True:
                 raise ValueError("Guarded motor mux is not enabled for live output")
-            if (self.depth_at is None or now-self.depth_at > 0.30
-                    or self.depth_blocked):
+            if self.depth_at is None or now-self.depth_at > 0.30:
+                raise ValueError("Depth sensor not fresh")
+            if self.depth_blocked and not (
+                    self.bench_directional and
+                    self.mux_state.get("bench_directional") is True):
                 raise ValueError("Depth sensor blocked or not fresh")
         return self._current_tf_position()
 
