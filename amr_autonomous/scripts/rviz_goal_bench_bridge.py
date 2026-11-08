@@ -61,7 +61,7 @@ class RvizBenchBridge(Node):
         self.goal = msg
         self.started = time.monotonic()
         self.state = "PREARM"
-        self.get_logger().info("Goal received; zero-RPM CAN handshake")
+        self.get_logger().info("Goal received; waiting for CAN ARM handshake")
 
     def tick(self):
         now = time.monotonic()
@@ -82,12 +82,12 @@ class RvizBenchBridge(Node):
                     fut = self.client.send_goal_async(
                         NavigateToPose.Goal(pose=self.goal))
                     fut.add_done_callback(self.on_accepted)
-        if self.state == "RUNNING" and (not fresh_motor or not fresh_depth):
+        if self.state in ("SENDING", "RUNNING") and (not fresh_motor or not fresh_depth):
             self.stop("Motor/depth status lost")
-        if self.state in ("PREARM", "SENDING", "RUNNING"):
-            self.arm_pub.publish(Bool(data=True))
-        else:
-            self.arm_pub.publish(Bool(data=False))
+        # Zero-only ARM stays alive while idle, but never on stale/fault data.
+        hold_arm = (self.state in ("IDLE", "PREARM", "SENDING", "RUNNING")
+                    and bool(fresh_motor) and fresh_depth)
+        self.arm_pub.publish(Bool(data=hold_arm))
         self.auto_pub.publish(Bool(data=self.state == "RUNNING"))
 
     def on_accepted(self, future):
@@ -106,7 +106,14 @@ class RvizBenchBridge(Node):
     def on_result(self, future):
         try:
             status = future.result().status
-            self.stop("Goal result: " + ("SUCCEEDED" if status == GoalStatus.STATUS_SUCCEEDED else str(status)))
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().info("Goal SUCCEEDED; zero-only ARM ready for next goal")
+                self.goal_handle = None
+                self.goal = None
+                self.state = "IDLE"
+                self.auto_pub.publish(Bool(data=False))
+            else:
+                self.stop("Goal result: " + str(status))
         except Exception as exc:
             self.stop("Goal error: " + str(exc))
 
