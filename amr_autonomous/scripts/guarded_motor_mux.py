@@ -217,8 +217,11 @@ class GuardedMotorMux(Node):
             for name, bit in zip(directions, bits)
         }
         if self.bench_directional and depth_fresh and self.depth_blocked:
+            # Raised-wheels bench command classification only; rear and
+            # lateral clearance are NOT verified by the front depth camera.
             directional_clearance.update({
                 "reverse": True, "pivot_left": True, "pivot_right": True,
+                "reverse_left": True, "reverse_right": True,
             })
         directional_clearance.update({
             "lidar_mask": mask, "lidar_fresh": lidar_fresh,
@@ -231,14 +234,17 @@ class GuardedMotorMux(Node):
                        "LIDAR_STALE_OR_INVALID" if not lidar_fresh else
                        "ADVISORY_ONLY"),
         })
-        # RAISED-WHEELS BENCH ONLY: front depth does not establish rear/side clearance.
-        # Permit pure reverse or equal-and-opposite pivot requests, not arcs.
+        # Raised-wheels bench ONLY: classify pure reverse, reverse arcs and
+        # zero-linear-speed pivots. Mixed forward/reverse arcs are not granted
+        # unless they are a pure equal-and-opposite pivot.
         left, right = data
         reverse = valid and left < -1e-9 and right < -1e-9
+        reverse_arc = valid and left <= 0.0 and right <= 0.0 and (
+            left < -1e-9 or right < -1e-9)
         pivot = valid and abs(left + right) < 1e-6 and (
             (left < -1e-9 and right > 1e-9) or
             (left > 1e-9 and right < -1e-9))
-        bench_escape = self.bench_directional and (reverse or pivot)
+        bench_escape = self.bench_directional and (reverse_arc or pivot)
         # Preserve Nav2-requested RPM continuously. Do not inject timed
         # reverse/pivot commands or invent a trajectory in the motor mux.
         no_conflicts = self.sole_publisher() if self.live else True
@@ -322,7 +328,9 @@ class GuardedMotorMux(Node):
             "bench_escape_candidate": bench_escape,
             "nav2_requested_direction": (
                 "forward" if valid and left > 0 and right > 0 else
-                "reverse" if reverse else
+                "reverse" if reverse and abs(left-right) < 1e-6 else
+                "reverse_left" if reverse_arc and left < right else
+                "reverse_right" if reverse_arc and right < left else
                 "pivot" if pivot else
                 "mixed_or_arc" if valid else "invalid"),
             "directional_clearance": directional_clearance, "lift_safe": lift_ok,
