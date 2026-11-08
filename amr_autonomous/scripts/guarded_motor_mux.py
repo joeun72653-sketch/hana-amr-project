@@ -29,8 +29,6 @@ class GuardedMotorMux(Node):
         super().__init__("amr_guarded_motor_mux")
         self.live = live
         self.bench_directional = bench_directional
-        self.bench_escape_started = None
-        self.bench_escape_done = False
         self.mode = "MANUAL"
         self.mode_at = time.monotonic()
         self.auto_limit = 30.0
@@ -85,7 +83,6 @@ class GuardedMotorMux(Node):
 
     def reset(self):
         self.phase = "DISARMED"
-        self.bench_escape_started = None
         for mode in self.request_at:
             self.request_at[mode] = [None, None]
 
@@ -106,9 +103,6 @@ class GuardedMotorMux(Node):
                 self.reset()
 
     def on_auto_active(self, msg):
-        if msg.data is not True and self.auto_active:
-            self.bench_escape_started = None
-            self.bench_escape_done = False
         self.auto_active = msg.data is True
         self.auto_active_at = time.monotonic()
 
@@ -233,28 +227,8 @@ class GuardedMotorMux(Node):
             (left > 1e-9 and right < -1e-9))
         bench_escape = self.bench_directional and (reverse or pivot)
         depth_fresh = self.fresh(self.depth_at, self.DEPTH_AGE, now)
-        # Bench-only, single bounded recovery demonstration on raised wheels.
-        # Nav2 may continue publishing forward while blocked. Replace its
-        # command with a brief reverse then pivot; never loop indefinitely.
-        # The normal authorization, lift, CAN watchdog and E-stop remain required.
-        if self.bench_directional and self.mode == "AUTO" and active and depth_fresh:
-            if depth_ok:
-                self.bench_escape_started = None
-                self.bench_escape_done = False
-            elif not self.bench_escape_done:
-                if self.bench_escape_started is None:
-                    self.bench_escape_started = now
-                elapsed = now - self.bench_escape_started
-                if elapsed < 1.0:
-                    data = [-10.0, -10.0]
-                elif elapsed < 2.0:
-                    data = [-10.0, 10.0]
-                else:
-                    data = [0.0, 0.0]
-                    self.bench_escape_done = True
-                reverse = data[0] < 0 and data[1] < 0
-                pivot = data[0] * data[1] < 0 and abs(sum(data)) < 1e-6
-                bench_escape = reverse or pivot
+        # Preserve Nav2-requested RPM continuously. Do not inject timed
+        # reverse/pivot commands or invent a trajectory in the motor mux.
         no_conflicts = self.sole_publisher() if self.live else True
         lift_ok = self.safe_lift(now)
         reason = "OK"
@@ -328,7 +302,6 @@ class GuardedMotorMux(Node):
             "motor_stop_verified": self.stopped(now),
             "depth_clear": depth_ok, "bench_directional": self.bench_directional,
             "bench_escape_candidate": bench_escape,
-            "bench_escape_done": self.bench_escape_done,
             "directional_clearance": directional_clearance, "lift_safe": lift_ok,
             "live_enabled": self.live, "prearm_zero_only": prearm,
             "reason": reason,
