@@ -8,6 +8,8 @@ becomes node-2 positive. Confirm motor IDs/polarities on lifted wheels.
 
 Safety: independent hardware E-stop AND drive-side comms-loss stop required.
 The Python process cannot guarantee a physical stop after a CAN/link failure.
+Normal zero-RPM commands do not wait for the motors to settle before accepting
+the next command. Physical stop confirmation is monitored asynchronously.
 """
 
 import json
@@ -179,11 +181,11 @@ class DualWheelState:
             return
         # A newly unlocked side that never supplies its first RPM must
         # still expire after 350 ms.
-        #for t in self.received_at.values():
-        #t = self.armed_at if t is None else t
-        #    if t is None or not (0 <= now-t < self.timeout):
-        #        self._latch('WATCHDOG_TIMEOUT')
-        #        break
+        for t in self.received_at.values():
+            reference = self.armed_at if t is None else t
+            if reference is None or not (0 <= now-reference < self.timeout):
+                self._latch('WATCHDOG_TIMEOUT')
+                break
 
     def snapshot(self, now=None):
         if now is None:
@@ -241,29 +243,34 @@ class CanWorker(threading.Thread):
         self.stop_tracking_lock = threading.Lock()
         self.stop_verify_count = 0
         self.stop_verified_at = None
+        self.stop_monitor = None
+        self.stop_requested_epoch = 0
+        self.reversal_pending = False
 
     def _set_applied(self, value):
         self.applied = tuple(value)
         with self.state.lock:
             self.state.applied = self.applied
 
-    def write_speed(self, can, node, rpm):
+    def write_pair(self, can, desired, force=False):
+        """Send both changed SDO targets before waiting for either ACK.
+
+        A 20 Hz ROS target may change while CAN ACKs are pending. Finishing
+        the pair prevents repeated left-wheel updates from starving the right.
+        A new stop epoch still has priority after the ACKs are collected.
+        """
+        changes = {i + 1: int(rpm) for i, rpm in enumerate(desired)
+                   if force or rpm != self.applied[i]}
+        if not changes:
+            return
         can.ser.reset_input_buffer()
         can.buffer.clear()
-        can.send(node, speed_payload(rpm))
-        response = can.wait_sdo(node, 0x60FF)
-        if not response or response[0] != 0x60:
-            raise RuntimeError(f'Node {node} speed write ACK failed')
-        print(f'[CAN] Node{node} target={rpm}', flush=True)
-
-    def stop_verify(self, can):
-        # Transmit BOTH zeros BEFORE waiting for either acknowledgment.
-        pending = {1, 2}
-        for node in (1, 2):
-            can.send(node, speed_payload(0))
+        for node, rpm in changes.items():
+            can.send(node, speed_payload(rpm))
+        pending = set(changes)
         deadline = time.monotonic() + 2.0
         while pending and time.monotonic() < deadline:
-            response = can.receive(max(0, deadline - time.monotonic()))
+            response = can.receive(max(0.0, deadline - time.monotonic()))
             if response is None:
                 break
             can_id, data = response
@@ -271,53 +278,93 @@ class CanWorker(threading.Thread):
             if node not in pending or len(data) < 4 or data[1:4] != b'\xff\x60\x00':
                 continue
             if data[0] == 0x80:
-                raise RuntimeError(f'Node{node} STOP SDO abort')
+                raise RuntimeError(f'Node{node} target SDO abort')
             if data[0] == 0x60:
                 pending.remove(node)
         if pending:
-            raise TimeoutError(f'STOP ACK missing: {sorted(pending)}')
-        self._set_applied((0, 0))
-        deadline = time.monotonic() + STOP_TIMEOUT
-        stable = 0
-        while time.monotonic() < deadline:
-            actual = (can.read_sdo(1, 0x606C, signed=True),
-                      can.read_sdo(2, 0x606C, signed=True))
-            with self.state.lock:
-                self.state.actual = actual
+            raise TimeoutError(f'RPM target ACK missing: {sorted(pending)}')
+        self._set_applied(desired)
+        print(f'[CAN] paired target={tuple(desired)}', flush=True)
 
-            # Publish actual RPM samples during stop verification.
-            stamp = time.time()
-            sample = (
-                stamp,
-                float(actual[0] * CAN_SIGN['left']),
-                float(actual[1] * CAN_SIGN['right']),
-            )
+    def begin_stop_monitor(self, epoch=None):
+        """Schedule physical-zero confirmation without blocking normal RPMs."""
+        self.stop_monitor = {
+            'epoch': epoch, 'since': time.monotonic(), 'stable': 0,
+        }
 
+    def poll_motor_feedback(self, can):
+        """Read encoder RPM and advance any pending stop confirmation."""
+        raw_left = can.read_sdo(1, 0x606C, signed=True)
+        raw_right = can.read_sdo(2, 0x606C, signed=True)
+        actual = (raw_left, raw_right)
+        with self.state.lock:
+            self.state.actual = actual
+        stamp = time.time()
+        sample = (stamp, float(raw_left * CAN_SIGN['left']),
+                  float(raw_right * CAN_SIGN['right']))
+        try:
+            self.encoder_samples.put_nowait(sample)
+        except queue.Full:
             try:
-                self.encoder_samples.put_nowait(sample)
-            except queue.Full:
-                try:
-                    self.encoder_samples.get_nowait()
-                except queue.Empty:
-                    pass
-                self.encoder_samples.put_nowait(sample)
+                self.encoder_samples.get_nowait()
+            except queue.Empty:
+                pass
+            self.encoder_samples.put_nowait(sample)
+        self.last_encoder = time.monotonic()
+        self.last_feedback = self.last_encoder
 
-            self.last_encoder = time.monotonic()
+        monitor = self.stop_monitor
+        if monitor is None or self.applied != (0, 0):
+            return
+        monitor['stable'] = (monitor['stable'] + 1
+                             if all(abs(x) <= 1 for x in actual) else 0)
+        if monitor['stable'] >= 3:
+            for node in (1, 2):
+                if can.read_sdo(node, 0x60FF, signed=True) != 0:
+                    raise RuntimeError(f'Node{node} target not zero')
+            with self.stop_tracking_lock:
+                self.stop_verify_count += 1
+                self.stop_verified_at = time.monotonic()
+                count = self.stop_verify_count
+            if monitor['epoch'] is not None:
+                self.state.verify_stop_epoch(monitor['epoch'])
+            self.stop_monitor = None
+            print('[STOP CONFIRMED] actual=', actual,
+                  'count=', count, flush=True)
+        elif self.last_encoder - monitor['since'] >= STOP_TIMEOUT:
+            raise TimeoutError('Drive did not stop within safety timeout')
 
-            stable = stable + 1 if all(abs(x) <= 1 for x in actual) else 0
-            if stable >= 3:
-                for node in (1, 2):
-                    if can.read_sdo(node, 0x60FF, signed=True) != 0:
-                        raise RuntimeError(f'Node{node} target not zero')
-                with self.stop_tracking_lock:
-                    self.stop_verify_count += 1
-                    self.stop_verified_at = time.monotonic()
-                    count = self.stop_verify_count
-                print('[STOP VERIFIED] actual=', actual,
-                      'count=', count, flush=True)
-                return
-            time.sleep(0.1)
-        raise TimeoutError('STOP verification timeout')
+    def process_motion(self, can, state_snapshot):
+        """Apply one fresh pair without starving the second CAN node."""
+        if not state_snapshot['stop_verified']:
+            if self.stop_requested_epoch != state_snapshot['epoch']:
+                self.write_pair(can, (0, 0), force=True)
+                self.begin_stop_monitor(state_snapshot['epoch'])
+                self.stop_requested_epoch = state_snapshot['epoch']
+            return
+
+        desired = state_snapshot['desired']
+        reversing = any(
+            old != 0 and new != 0 and (old > 0) != (new > 0)
+            for old, new in zip(self.applied, desired)
+        )
+        if reversing:
+            print('[REVERSE] send both zero; wait for motor stop', flush=True)
+            self.write_pair(can, (0, 0), force=True)
+            self.begin_stop_monitor()
+            self.reversal_pending = True
+        elif self.reversal_pending:
+            if self.stop_monitor is None:
+                self.reversal_pending = False
+        elif desired == (0, 0):
+            if self.applied != (0, 0):
+                # Brief normal zero does not block the next nonzero pair.
+                self.write_pair(can, (0, 0), force=True)
+                self.begin_stop_monitor()
+        elif desired != self.applied:
+            # New 20 Hz targets may arrive mid-ACK; transmit the whole pair.
+            self.write_pair(can, desired)
+            self.stop_monitor = None
 
     def read_sdo_init(self, can, node, index, signed=False):
         """Retry timed-out SDO reads only during startup verification."""
@@ -365,7 +412,11 @@ class CanWorker(threading.Thread):
                             f'Node{node} not enabled/zero: '
                             f'SW=0x{sw:04X}, target={target}, actual={actual}'
                         )
-                self.stop_verify(can)
+                # Startup already confirmed both physical RPMs and targets are
+                # zero; no additional blocking stop-verification loop needed.
+                with self.stop_tracking_lock:
+                    self.stop_verify_count += 1
+                    self.stop_verified_at = time.monotonic()
                 self.state.verify_stop_epoch(0)
                 self.ready.set()
                 print('[READY] ROS wheel RPM topics; requires BOTH zero messages to arm', flush=True)
@@ -373,66 +424,32 @@ class CanWorker(threading.Thread):
                     s = self.state.snapshot()
                     if s['shutdown']:
                         break
-                    # Every latch (watchdog, invalid value, etc.) demands a
-                    # physically verified dual stop, even if both zeros arrive
-                    # before the worker observes that latch.
-                    if not s['stop_verified']:
-                        self.stop_verify(can)
-                        self.state.verify_stop_epoch(s['epoch'])
-                        continue
-                    desired = s['desired']
-                    reversing = any(
-                        old != 0 and new != 0 and (old > 0) != (new > 0)
-                        for old, new in zip(self.applied, desired)
-                    )
-                    if reversing:
-                        print('[REVERSE] stop both wheels and verify', flush=True)
-                        self.stop_verify(can)
-                        continue  # Always take a fresh two-topic snapshot.
-                    if desired == (0, 0) and self.applied != (0, 0):
-                        self.stop_verify(can)
-                        continue
-                    if desired != (0, 0) and desired != self.applied:
-                        for i, rpm in enumerate(desired):
-                            fresh = self.state.snapshot()
-                            if not fresh['stop_verified'] or fresh['desired'] != desired or fresh['epoch'] != s['epoch']:
-                                break
-                            if rpm != self.applied[i]:
-                                self.write_speed(can, i + 1, rpm)
-                                next_applied = list(self.applied)
-                                next_applied[i] = rpm
-                                self._set_applied(next_applied)
-                    now = time.monotonic()
-                    # CANopen 0x606C: actual motor-shaft RPM.
-                    # Publish forward-positive motor RPM without gear reduction.
-                    if now - self.last_encoder >= ENCODER_INTERVAL:
-                        raw_left = can.read_sdo(1, 0x606C, signed=True)
-                        raw_right = can.read_sdo(2, 0x606C, signed=True)
-                        stamp = time.time()
-
-                        with self.state.lock:
-                            self.state.actual = (raw_left, raw_right)
-
-                        left_rpm = raw_left * CAN_SIGN['left']
-                        right_rpm = raw_right * CAN_SIGN['right']
-                        sample = (stamp, float(left_rpm), float(right_rpm))
-
-                        try:
-                            self.encoder_samples.put_nowait(sample)
-                        except queue.Full:
-                            try:
-                                self.encoder_samples.get_nowait()
-                            except queue.Empty:
-                                pass
-                            self.encoder_samples.put_nowait(sample)
-
-                        self.last_encoder = time.monotonic()
-                        self.last_feedback = self.last_encoder
+                    # Latches still require a physical zero before re-arming.
+                    # Check that over successive ordinary encoder polls, not
+                    # inside a blocking stop_verify call.
+                    self.process_motion(can, s)
+                    if time.monotonic() - self.last_encoder >= ENCODER_INTERVAL:
+                        self.poll_motor_feedback(can)
                     time.sleep(0.02)
-                self.stop_verify(can)
+                # Ctrl+C/shutdown keeps the CAN link alive until physical stop
+                # is observed, but this check never blocks normal operation.
+                self.write_pair(can, (0, 0), force=True)
+                self.begin_stop_monitor()
+                while self.stop_monitor is not None:
+                    self.poll_motor_feedback(can)
+                    if self.stop_monitor is not None:
+                        time.sleep(0.1)
         except Exception as exc:
             print('[CRITICAL CAN]', repr(exc), flush=True)
             self.state.set_fault('CAN_FAULT')
+            if can is not None:
+                # Best-effort stop even if an RPM ACK or feedback read failed.
+                # Never report this as a confirmed physical stop.
+                for node in (1, 2):
+                    try:
+                        can.send(node, speed_payload(0))
+                    except Exception:
+                        pass
             # The CAN link may itself have failed; software cannot guarantee stop.
             print('[ACTION] Use independent hardware E-stop; inspect drive status', flush=True)
         finally:
