@@ -116,15 +116,15 @@ class PairedCanTests(unittest.TestCase):
         self.worker.process_motion(self.can, self.snapshot((-250, 250)))
         self.assertEqual(self.worker.applied, (-250, 250))
 
-    def test_stale_single_side_latches_both_wheels(self):
+    def test_stale_single_side_zeros_desired_without_watchdog_latch(self):
         self.state.armed = True
         self.state.stop_verified = True
         self.state.armed_at = 10.0
         self.state.received_at = {'left': 10.30, 'right': 10.0}
         self.state.command = {'left': 300, 'right': 300}
         snapshot = self.state.snapshot(now=10.36)
-        self.assertFalse(snapshot['armed'])
-        self.assertTrue(snapshot['timeout_latched'])
+        self.assertTrue(snapshot['armed'])
+        self.assertFalse(snapshot['timeout_latched'])
         self.assertEqual(snapshot['desired'], (0, 0))
 
 
