@@ -127,7 +127,11 @@ def source_ros_environment() -> dict[str, str]:
         Path.home() / 'custom_amr_ws/install/setup.bash',
         Path.home() / 'real_amr/install/setup.bash',
     )
-    commands = ['set -e', f'source {shlex.quote(str(base))}']
+    # ROS messages import NumPy before readiness checks can report errors.
+    # Use the distro packages rather than a potentially incompatible ~/.local
+    # installation, including Python invoked by workspace environment hooks.
+    commands = ['set -e', 'export PYTHONNOUSERSITE=1',
+                f'source {shlex.quote(str(base))}']
     commands.extend(f'source {shlex.quote(str(path))}' for path in overlays if path.is_file())
     commands.extend(["printf '__AMR_ENV_START__\\0'", 'env -0'])
     result = subprocess.run(
@@ -145,6 +149,9 @@ def source_ros_environment() -> dict[str, str]:
         if b'=' in item:
             key, value = item.split(b'=', 1)
             env[key.decode(errors='surrogateescape')] = value.decode(errors='surrogateescape')
+    # Reassert after overlays so every managed child (including the message
+    # probe) inherits isolation even if a shell/overlay previously set it to 0.
+    env['PYTHONNOUSERSITE'] = '1'
     env['ROS_DOMAIN_ID'] = '31'
     env['PYTHONUNBUFFERED'] = '1'
     env['RCUTILS_COLORIZED_OUTPUT'] = '0'
