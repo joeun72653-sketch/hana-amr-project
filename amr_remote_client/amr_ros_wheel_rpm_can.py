@@ -179,13 +179,9 @@ class DualWheelState:
             self._latch('AUTH_TIMEOUT')
         if not self.armed:
             return
-        # A newly unlocked side that never supplies its first RPM must
-        # still expire after 350 ms.
-        for t in self.received_at.values():
-            reference = self.armed_at if t is None else t
-            if reference is None or not (0 <= now-reference < self.timeout):
-                self._latch('WATCHDOG_TIMEOUT')
-                break
+        # The per-side 350 ms WATCHDOG_TIMEOUT latch remains intentionally
+        # disabled. Keep the original behavior: stale commands may result in
+        # zero desired RPM via _both_fresh_locked, but do not latch the drive.
 
     def snapshot(self, now=None):
         if now is None:
@@ -487,12 +483,13 @@ def main():
             self.was_timeout_latched = False
             self.get_logger().info(
                 'Listening wheel_rpm_left/right (std_msgs/Float64); no software RPM limit; '
-                f'watchdog {COMMAND_TIMEOUT*1000:.0f} ms PER topic. '
+                f'freshness check {COMMAND_TIMEOUT*1000:.0f} ms PER topic; '
+                'WATCHDOG_TIMEOUT latch disabled. '
                 'Only explicit /amr_motion_authorized=True permits arming. '
                 'Both topics must receive 0 AFTER a latch to unlock together. '
                 'These zeros are discarded; motion waits for two NEW samples. '
                 'Publishes Bool True on /rpm_topic_timeout at 10 Hz while '
-                'watchdog-latched; Bool False once after unlocking.')
+                'timeout-latched; Bool False once after unlocking.')
 
         def receive(self, side, rpm):
             accepted = state.receive(side, rpm)
@@ -507,7 +504,7 @@ def main():
                 except queue.Empty:
                     break
                 self.encoder_pub.publish(Float64MultiArray(data=list(sample)))
-            s = state.snapshot()  # Also checks both 350 ms deadlines.
+            s = state.snapshot()  # Checks command freshness; no 350 ms latch.
             with worker.stop_tracking_lock:
                 stop_count = worker.stop_verify_count
                 stop_at = worker.stop_verified_at
