@@ -43,6 +43,7 @@ SCRIPTS = {
     'imu_ws': ROOT / 'amr_imu/amr_imu_ws.py',
     'ros_probe': ROOT / 'amr_tools/ros_topic_probe.py',
     'camera': ROOT / 'amr_websocket/amr_openvino_camera_depth.py',
+    'camera_depth': ROOT / 'amr_websocket/amr_depth_ros_publisher.py',
     'calibration': ROOT / 'amr_websocket/amr_calibration_manager.py',
     'can': CAN_SCRIPT,
     'motor_enable': ROOT / 'amr_motor_control/amr_enable_motors.py',
@@ -308,7 +309,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
         if not args.local_ros_only:
             required.append('imu_ws')
     if not args.skip_camera:
-        required.append('camera')
+        required.append('camera_depth' if args.skip_detech else 'camera')
     if args.with_viewers:
         required += ['rpm_viewer', 'encoder_viewer']
     for name in required:
@@ -584,7 +585,7 @@ def main() -> int:
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
     parser.add_argument('--skip-detech', action='store_true',
-                        help='Keep Orbbec RGB and Depth capture / MJPEG, disable AI detection')
+                        help='Publish depth-only ROS Image+CameraInfo; disable RGB, MJPEG and AI')
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
@@ -599,7 +600,7 @@ def main() -> int:
                         help='Explicitly allow the legacy Web WASD bridge to publish nonzero RPM')
     parser.add_argument('--with-viewers', action='store_true',
                         help='Also start actual-RPM and encoder text viewers')
-    parser.add_argument('--camera-python', help='Interpreter with cv2, ultralytics, pyorbbecsdk')
+    parser.add_argument('--camera-python', help='Camera interpreter (depth-only mode additionally requires rclpy and ROS messages)')
     parser.add_argument('--log-dir', type=Path,
                         default=Path.home() / 'amr_one_command_logs')
     args = parser.parse_args()
@@ -636,8 +637,8 @@ def main() -> int:
                   + ') -> /imu/data -> RPY converter'
                   + ('' if args.local_ros_only else ' -> IMU WebSocket :8766'))
         if not args.skip_camera:
-            print('  ' + ('Orbbec RGB + Depth (AI disabled)' if args.skip_detech
-                          else 'OpenVINO + Orbbec camera') + ' -> /health :8090')
+            print('  ' + ('Orbbec Depth Image + CameraInfo ROS topics (no RGB/MJPEG/AI)' if args.skip_detech
+                          else 'OpenVINO + Orbbec camera -> /health :8090'))
         print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
         print('  CANopen controller -> verified zero + /amr_motor_state')
         if not args.skip_bridge:
@@ -673,7 +674,7 @@ def main() -> int:
         ports.append(("127.0.0.1", 8000))
     if not args.skip_imu and not args.local_ros_only:
         ports.append(("127.0.0.1", 8766))
-    if not args.skip_camera:
+    if not args.skip_camera and not args.skip_detech:
         ports.append(("127.0.0.1", 8090))
     if not args.skip_calibration:
         ports.append((env.get('AMR_CAL_HOST', '192.168.0.35'),
@@ -713,13 +714,19 @@ def main() -> int:
                 supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
 
         if not args.skip_camera:
-            camera_argv = [cam_py, str(SCRIPTS['camera'])]
             if args.skip_detech:
-                camera_argv.append('--skip-detech')
-            supervisor.start('camera', camera_argv,
-                             fatal_markers=('[CAMERA ERROR]', '[CAMERA] 종료'))
-            supervisor.wait_http('Camera', 'http://127.0.0.1:8090/health',
-                                 lambda body: body == b'CAMERA_OK', 90)
+                supervisor.start('camera', [cam_py, str(SCRIPTS['camera_depth'])],
+                                 fatal_markers=('[CAMERA ERROR]',))
+                supervisor.wait_topic('Depth camera', '/camera/depth/image_raw',
+                                      'sensor_msgs/msg/Image', 45, best_effort=True)
+                supervisor.wait_topic('Depth intrinsics',
+                                      '/camera/registered_color/camera_info',
+                                      'sensor_msgs/msg/CameraInfo', 15, best_effort=True)
+            else:
+                supervisor.start('camera', [cam_py, str(SCRIPTS['camera'])],
+                                 fatal_markers=('[CAMERA ERROR]', '[CAMERA] 종료'))
+                supervisor.wait_http('Camera', 'http://127.0.0.1:8090/health',
+                                     lambda body: body == b'CAMERA_OK', 90)
 
         ensure_motors_enabled(env, py, logs, see_log=args.see_log)
 
@@ -778,7 +785,7 @@ def main() -> int:
                 if not args.skip_web_ui:
                     checks.append(('Web UI', 'http://127.0.0.1:8000/index.html',
                                    lambda b: b'<html' in b.lower()))
-                if not args.skip_camera:
+                if not args.skip_camera and not args.skip_detech:
                     checks.append(('Camera', 'http://127.0.0.1:8090/health',
                                    lambda b: b == b'CAMERA_OK'))
                 if not args.skip_calibration:
