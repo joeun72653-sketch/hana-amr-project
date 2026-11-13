@@ -89,7 +89,25 @@ class DepthPublisher(Node):
         device.enable_global_timestamp(True)
         self.config = Config()
         profiles = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-        self.profile = profiles.get_video_stream_profile(width, height, OBFormat.Y16, fps)
+        try:
+            self.profile = profiles.get_video_stream_profile(width, height, OBFormat.Y16, fps)
+        except Exception as exc:
+            available = []
+            for index in range(profiles.get_count()):
+                try:
+                    profile = profiles.get_stream_profile_by_index(index).as_video_stream_profile()
+                    if profile.get_format() == OBFormat.Y16:
+                        available.append(
+                            f'{profile.get_width()}x{profile.get_height()}@{profile.get_fps()}'
+                        )
+                except Exception:
+                    continue
+            supported = ', '.join(sorted(set(available))) or 'unable to enumerate'
+            raise RuntimeError(
+                f'Unsupported Orbbec Depth Y16 profile: {width}x{height}@{fps} Hz. '
+                f'Available device profiles: {supported}. '
+                'Select a supported resolution/FPS using --width, --height and --fps.'
+            ) from exc
         self.config.enable_stream(self.profile)
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=5,
                          reliability=ReliabilityPolicy.BEST_EFFORT)
