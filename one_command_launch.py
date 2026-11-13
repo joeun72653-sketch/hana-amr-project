@@ -214,11 +214,22 @@ def verify_can_import_source() -> None:
 
 
 def can_serial_port() -> str:
-    can_source = CAN_SCRIPT.read_text(encoding='utf-8')
-    match = re.search(r"^CAN_PORT\s*=\s*['\"]([^'\"]+)['\"]", can_source, re.M)
-    if not match:
-        raise LaunchError('CAN_PORT missing in CAN worker')
-    return match.group(1)
+    """Auto-detect the sole FTDI FT232R adapter used by the CAN controller."""
+    device_dir = Path('/dev/serial/by-id')
+    if not device_dir.is_dir():
+        raise LaunchError(f'CAN serial directory is missing: {device_dir}')
+    matches = sorted(path for path in device_dir.iterdir()
+                     if 'ftdi_ft232r' in path.name.casefold() and path.exists())
+    if not matches:
+        raise LaunchError('No FTDI_FT232R CAN serial device found under /dev/serial/by-id/')
+    if len(matches) != 1:
+        raise LaunchError('Multiple FTDI_FT232R serial devices found; CAN device is ambiguous: '
+                          + ', '.join(str(path) for path in matches))
+    port = matches[0]
+    if not os.access(port, os.R_OK | os.W_OK):
+        raise LaunchError(f'CAN serial device is not readable/writable: {port}. '
+                          'Check dialout/group permissions.')
+    return str(port)
 
 
 def resolve_microstrain_port() -> Path:
@@ -285,9 +296,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not args.skip_camera and not CAMERA_MODEL.is_dir():
         raise LaunchError(f'OpenVINO model missing: {CAMERA_MODEL}')
     verify_can_import_source()
-    port = can_serial_port()
-    if not Path(port).exists():
-        raise LaunchError(f'CAN serial device missing: {port}')
+    can_serial_port()
 
 
 class Supervisor:
@@ -603,6 +612,8 @@ def main() -> int:
 
     validate_inputs(args)
     env = source_ros_environment()
+    env['AMR_CAN_PORT'] = can_serial_port()
+    print(f"[CAN] Auto-detected FTDI FT232R adapter: {env['AMR_CAN_PORT']}", flush=True)
     if args.local_ros_only:
         configure_local_ros_network(env)
     if not shutil.which('ros2', path=env.get('PATH')):
