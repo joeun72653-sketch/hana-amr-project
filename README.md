@@ -179,6 +179,21 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## 새 IPC에서 웹 접속 IP 지정
+
+`one_command_launch.py` 실행 시 `--host-ip`로 현재 IPC에 실제로 할당된
+LAN IPv4 주소를 지정할 수 있습니다. 캘리브레이션 서버(8877) 바인딩 주소와
+휴대폰 접속 안내 URL(8000)에 모두 적용됩니다.
+
+```bash
+python3 -u one_command_launch.py --skip-camera --web-drive --host-ip 192.168.0.250
+```
+
+기존 `AMR_CAL_HOST` 환경변수도 계속 지원하며 `--host-ip`가 우선합니다.
+둘 다 지정하지 않으면 이전 기본값 `192.168.0.35`를 유지합니다.
+주소는 반드시 해당 PC에 할당되어 있어야 합니다(`ip -4 addr`로 확인).
+이 옵션은 Windows WebSocket 서버(`192.168.0.31:8765`)의 주소는 변경하지 않습니다.
+
 ## CAN USB 장치 자동 탐색 (통합 런처)
 
 `one_command_launch.py`는 실행 시 `/dev/serial/by-id/`에서
