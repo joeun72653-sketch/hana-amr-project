@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import argparse
 import os
 import time
 import threading
@@ -8,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import numpy as np
+from ultralytics import YOLO
 from pyorbbecsdk import (
     Pipeline, Config, OBSensorType, OBAlignMode, OBFormat
 )
@@ -77,20 +77,15 @@ def estimate_distance(depth_m, box):
     return float(median)
 
 
-def camera_worker(skip_detech=False):
+def camera_worker():
     global latest_frame
 
     pipeline = None
     started = False
 
     try:
-        model = None
-        if not skip_detech:
-            from ultralytics import YOLO
-            print("[AI] OpenVINO 모델 로딩", flush=True)
-            model = YOLO(MODEL_PATH, task="detect")
-        else:
-            print("[CAMERA] AI detection disabled; RGB + Depth active", flush=True)
+        print("[AI] OpenVINO 모델 로딩", flush=True)
+        model = YOLO(MODEL_PATH, task="detect")
 
         pipeline = Pipeline()
         config = Config()
@@ -182,64 +177,61 @@ def camera_worker(skip_detech=False):
                     depth_m, cv2.ROTATE_180
                 )
 
-            if skip_detech:
-                annotated = color
-            else:
-                results = model.predict(
-                    source=color,
-                    imgsz=640,
-                    device="cpu",
-                    conf=0.25,
-                    verbose=False
+            results = model.predict(
+                source=color,
+                imgsz=640,
+                device="cpu",
+                conf=0.25,
+                verbose=False
+            )
+
+            result = results[0]
+            annotated = result.plot()
+
+            for box in result.boxes:
+                xyxy = box.xyxy[0].cpu().numpy()
+                cls_id = int(box.cls[0])
+                name = result.names[cls_id]
+
+                if aligned_shape:
+                    distance = estimate_distance(
+                        depth_m, xyxy
+                    )
+                else:
+                    distance = None
+
+                x1, y1, x2, y2 = map(int, xyxy)
+
+                label = (
+                    f"{name} Z~{distance:.2f}m"
+                    if distance is not None
+                    else f"{name} Z:N/A"
                 )
 
-                result = results[0]
-                annotated = result.plot()
-
-                for box in result.boxes:
-                    xyxy = box.xyxy[0].cpu().numpy()
-                    cls_id = int(box.cls[0])
-                    name = result.names[cls_id]
-
-                    if aligned_shape:
-                        distance = estimate_distance(
-                            depth_m, xyxy
-                        )
-                    else:
-                        distance = None
-
-                    x1, y1, x2, y2 = map(int, xyxy)
-
-                    label = (
-                        f"{name} Z~{distance:.2f}m"
-                        if distance is not None
-                        else f"{name} Z:N/A"
-                    )
-
-                    text_y = min(
-                        annotated.shape[0] - 8,
-                        max(18, y2 + 20)
-                    )
-
-                    cv2.putText(
-                        annotated,
-                        label,
-                        (max(0, x1), text_y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 255, 255),
-                        2
-                    )
+                text_y = min(
+                    annotated.shape[0] - 8,
+                    max(18, y2 + 20)
+                )
 
                 cv2.putText(
                     annotated,
-                    "Depth Z estimate - NOT safety rated",
-                    (8, annotated.shape[0] - 12),
+                    label,
+                    (max(0, x1), text_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42,
-                    (255, 255, 255),
-                    1
+                    0.55,
+                    (0, 255, 255),
+                    2
                 )
+
+            cv2.putText(
+                annotated,
+                "Depth Z estimate - NOT safety rated",
+                (8, annotated.shape[0] - 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (255, 255, 255),
+                1
+            )
 
             success, encoded = cv2.imencode(
                 ".jpg",
@@ -321,16 +313,11 @@ class CameraHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Orbbec RGB/Depth MJPEG camera")
-    parser.add_argument("--skip-detech", action="store_true",
-                        help="Disable YOLO/OpenVINO detection while keeping RGB + Depth capture")
-    args = parser.parse_args()
-    if not args.skip_detech and not os.path.isdir(MODEL_PATH):
+    if not os.path.isdir(MODEL_PATH):
         raise FileNotFoundError(MODEL_PATH)
 
     worker = threading.Thread(
         target=camera_worker,
-        kwargs={"skip_detech": args.skip_detech},
         daemon=True
     )
     worker.start()
