@@ -586,6 +586,12 @@ def main() -> int:
     parser.add_argument('--skip-camera', action='store_true')
     parser.add_argument('--skip-detech', action='store_true',
                         help='Publish depth-only ROS Image+CameraInfo; disable RGB, MJPEG and AI')
+    parser.add_argument('--depth-width', type=int, default=960,
+                        help='Orbbec Depth width in skip-detech mode')
+    parser.add_argument('--depth-height', type=int, default=600,
+                        help='Orbbec Depth height in skip-detech mode')
+    parser.add_argument('--depth-fps', type=int, default=20,
+                        help='Orbbec Depth FPS in skip-detech mode')
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
@@ -655,6 +661,8 @@ def main() -> int:
         return 0
 
     validate_inputs(args)
+    if any(value <= 0 for value in (args.depth_width, args.depth_height, args.depth_fps)):
+        raise LaunchError('Depth width, height and fps must be positive')
     env = source_ros_environment()
     if args.host_ip:
         env['AMR_CAL_HOST'] = args.host_ip
@@ -715,7 +723,10 @@ def main() -> int:
 
         if not args.skip_camera:
             if args.skip_detech:
-                supervisor.start('camera', [cam_py, str(SCRIPTS['camera_depth'])],
+                supervisor.start('camera', [cam_py, str(SCRIPTS['camera_depth']),
+                                            '--width', str(args.depth_width),
+                                            '--height', str(args.depth_height),
+                                            '--fps', str(args.depth_fps)],
                                  fatal_markers=('[CAMERA ERROR]',))
                 supervisor.wait_topic('Depth camera', '/camera/depth/image_raw',
                                       'sensor_msgs/msg/Image', 45, best_effort=True)
