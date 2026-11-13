@@ -309,7 +309,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
         if not args.local_ros_only:
             required.append('imu_ws')
     if not args.skip_camera:
-        required.append('camera_depth' if args.skip_detech else 'camera')
+        required.append('camera_depth' if args.camera_slam else 'camera')
     if args.with_viewers:
         required += ['rpm_viewer', 'encoder_viewer']
     for name in required:
@@ -324,7 +324,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if CAL_FLAG.exists():
         raise LaunchError(f'Calibration flag already exists: {CAL_FLAG}. '
                           'Check whether calibration is still running before clearing it.')
-    if not args.skip_camera and not args.skip_detech and not CAMERA_MODEL.is_dir():
+    if not args.skip_camera and not args.camera_slam and not CAMERA_MODEL.is_dir():
         raise LaunchError(f'OpenVINO model missing: {CAMERA_MODEL}')
     verify_can_import_source()
     can_serial_port()
@@ -584,14 +584,14 @@ def main() -> int:
     parser.add_argument('--external-imu-driver', action='store_true',
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
-    parser.add_argument('--skip-detech', action='store_true',
+    parser.add_argument('--camera-slam', action='store_true',
                         help='Publish depth-only ROS Image+CameraInfo; disable RGB, MJPEG and AI')
     parser.add_argument('--depth-width', type=int, default=640,
-                        help='Orbbec Depth width in skip-detech mode')
+                        help='Orbbec Depth width in camera-slam mode')
     parser.add_argument('--depth-height', type=int, default=480,
-                        help='Orbbec Depth height in skip-detech mode')
+                        help='Orbbec Depth height in camera-slam mode')
     parser.add_argument('--depth-fps', type=int, default=15,
-                        help='Orbbec Depth FPS in skip-detech mode')
+                        help='Orbbec Depth FPS in camera-slam mode')
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
@@ -643,7 +643,7 @@ def main() -> int:
                   + ') -> /imu/data -> RPY converter'
                   + ('' if args.local_ros_only else ' -> IMU WebSocket :8766'))
         if not args.skip_camera:
-            print('  ' + ('Orbbec Depth Image + CameraInfo ROS topics (no RGB/MJPEG/AI)' if args.skip_detech
+            print('  ' + ('Orbbec Depth Image + CameraInfo ROS topics (no RGB/MJPEG/AI)' if args.camera_slam
                           else 'OpenVINO + Orbbec camera -> /health :8090'))
         print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
         print('  CANopen controller -> verified zero + /amr_motor_state')
@@ -682,7 +682,7 @@ def main() -> int:
         ports.append(("127.0.0.1", 8000))
     if not args.skip_imu and not args.local_ros_only:
         ports.append(("127.0.0.1", 8766))
-    if not args.skip_camera and not args.skip_detech:
+    if not args.skip_camera and not args.camera_slam:
         ports.append(("127.0.0.1", 8090))
     if not args.skip_calibration:
         ports.append((env.get('AMR_CAL_HOST', '192.168.0.35'),
@@ -722,7 +722,7 @@ def main() -> int:
                 supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
 
         if not args.skip_camera:
-            if args.skip_detech:
+            if args.camera_slam:
                 supervisor.start('camera', [cam_py, str(SCRIPTS['camera_depth']),
                                             '--width', str(args.depth_width),
                                             '--height', str(args.depth_height),
@@ -796,7 +796,7 @@ def main() -> int:
                 if not args.skip_web_ui:
                     checks.append(('Web UI', 'http://127.0.0.1:8000/index.html',
                                    lambda b: b'<html' in b.lower()))
-                if not args.skip_camera and not args.skip_detech:
+                if not args.skip_camera and not args.camera_slam:
                     checks.append(('Camera', 'http://127.0.0.1:8090/health',
                                    lambda b: b == b'CAMERA_OK'))
                 if not args.skip_calibration:
