@@ -586,11 +586,11 @@ def main() -> int:
     parser.add_argument('--skip-camera', action='store_true')
     parser.add_argument('--skip-detech', action='store_true',
                         help='Publish depth-only ROS Image+CameraInfo; disable RGB, MJPEG and AI')
-    parser.add_argument('--depth-width', type=int, default=960,
+    parser.add_argument('--depth-width', type=int, default=640,
                         help='Orbbec Depth width in skip-detech mode')
-    parser.add_argument('--depth-height', type=int, default=600,
+    parser.add_argument('--depth-height', type=int, default=480,
                         help='Orbbec Depth height in skip-detech mode')
-    parser.add_argument('--depth-fps', type=int, default=20,
+    parser.add_argument('--depth-fps', type=int, default=15,
                         help='Orbbec Depth FPS in skip-detech mode')
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
