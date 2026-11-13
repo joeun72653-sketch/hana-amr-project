@@ -323,7 +323,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if CAL_FLAG.exists():
         raise LaunchError(f'Calibration flag already exists: {CAL_FLAG}. '
                           'Check whether calibration is still running before clearing it.')
-    if not args.skip_camera and not CAMERA_MODEL.is_dir():
+    if not args.skip_camera and not args.skip_detech and not CAMERA_MODEL.is_dir():
         raise LaunchError(f'OpenVINO model missing: {CAMERA_MODEL}')
     verify_can_import_source()
     can_serial_port()
@@ -583,6 +583,8 @@ def main() -> int:
     parser.add_argument('--external-imu-driver', action='store_true',
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
+    parser.add_argument('--skip-detech', action='store_true',
+                        help='Keep Orbbec RGB and Depth capture / MJPEG, disable AI detection')
     parser.add_argument('--skip-calibration', action='store_true')
     parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
@@ -634,7 +636,8 @@ def main() -> int:
                   + ') -> /imu/data -> RPY converter'
                   + ('' if args.local_ros_only else ' -> IMU WebSocket :8766'))
         if not args.skip_camera:
-            print('  OpenVINO + Orbbec camera -> /health :8090')
+            print('  ' + ('Orbbec RGB + Depth (AI disabled)' if args.skip_detech
+                          else 'OpenVINO + Orbbec camera') + ' -> /health :8090')
         print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
         print('  CANopen controller -> verified zero + /amr_motor_state')
         if not args.skip_bridge:
@@ -710,9 +713,12 @@ def main() -> int:
                 supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
 
         if not args.skip_camera:
-            supervisor.start('camera', [cam_py, str(SCRIPTS['camera'])],
+            camera_argv = [cam_py, str(SCRIPTS['camera'])]
+            if args.skip_detech:
+                camera_argv.append('--skip-detech')
+            supervisor.start('camera', camera_argv,
                              fatal_markers=('[CAMERA ERROR]', '[CAMERA] 종료'))
-            supervisor.wait_http('AI camera', 'http://127.0.0.1:8090/health',
+            supervisor.wait_http('Camera', 'http://127.0.0.1:8090/health',
                                  lambda body: body == b'CAMERA_OK', 90)
 
         ensure_motors_enabled(env, py, logs, see_log=args.see_log)
