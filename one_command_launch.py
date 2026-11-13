@@ -221,6 +221,41 @@ def can_serial_port() -> str:
     return match.group(1)
 
 
+def resolve_microstrain_port() -> Path:
+    """Select the sole connected MicroStrain serial device by USB name."""
+    device_dir = Path('/dev/serial/by-id')
+    if not device_dir.is_dir():
+        raise LaunchError(f'MicroStrain serial directory is missing: {device_dir}')
+    matches = sorted(path for path in device_dir.iterdir()
+                     if 'microstrain' in path.name.casefold() and path.exists())
+    if not matches:
+        raise LaunchError('No MicroStrain serial device found under /dev/serial/by-id/')
+    if len(matches) != 1:
+        raise LaunchError('Multiple MicroStrain serial devices found: '
+                          + ', '.join(str(path) for path in matches))
+    port = matches[0]
+    if not os.access(port, os.R_OK | os.W_OK):
+        raise LaunchError(f'MicroStrain serial device is not readable/writable: {port}. '
+                          'Check dialout/group permissions.')
+    return port
+
+
+def prepare_microstrain_config(log_dir: Path) -> Path:
+    """Keep checked-in YAML unchanged; override only the runtime serial port."""
+    source = ROOT / 'amr_imu/config/microstrain.yml'
+    contents = source.read_text(encoding='utf-8')
+    pattern = r"""^(\s*port:\s*)['"]?[^\s'"#]+['"]?"""
+    if len(re.findall(pattern, contents, re.M)) != 1:
+        raise LaunchError('MicroStrain config must contain exactly one port parameter')
+    port = resolve_microstrain_port()
+    contents = re.sub(pattern, lambda m: m.group(1) + '"' + str(port) + '"',
+                      contents, count=1, flags=re.M)
+    config = log_dir / 'microstrain_runtime.yml'
+    config.write_text(contents, encoding='utf-8')
+    print(f'[IMU] Auto-detected MicroStrain: {port}', flush=True)
+    return config
+
+
 def validate_inputs(args: argparse.Namespace) -> None:
     required = ['can', 'motor_enable']
     if not args.skip_bridge:
@@ -243,16 +278,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not (ROOT / 'amr_imu/config/microstrain.yml').is_file() and not args.skip_imu:
         raise LaunchError('MicroStrain config missing')
     if not args.skip_imu and not args.external_imu_driver:
-        config_text = (ROOT / 'amr_imu/config/microstrain.yml').read_text(encoding='utf-8')
-        port_match = re.search(r'^\s+port:\s*[\'\"]?([^\'\"\s#]+)', config_text, re.M)
-        if not port_match:
-            raise LaunchError('MicroStrain config has no port parameter')
-        imu_port = Path(port_match.group(1))
-        if not imu_port.exists():
-            raise LaunchError(f'MicroStrain serial device is missing: {imu_port}')
-        if not os.access(imu_port, os.R_OK | os.W_OK):
-            raise LaunchError(f'MicroStrain serial device is not readable/writable: {imu_port}. '
-                              'Check dialout/group permissions and reconnect the device.')
+        resolve_microstrain_port()
     if CAL_FLAG.exists():
         raise LaunchError(f'Calibration flag already exists: {CAL_FLAG}. '
                           'Check whether calibration is still running before clearing it.')
@@ -613,7 +639,7 @@ def main() -> int:
     try:
         if not args.skip_imu:
             if not args.external_imu_driver:
-                config = ROOT / 'amr_imu/config/microstrain.yml'
+                config = prepare_microstrain_config(logs)
                 supervisor.start('imu_driver', ['ros2', 'launch', 'microstrain_inertial_driver',
                                                'microstrain_launch.py', f'params_file:={config}'],
                                  fatal_markers=('[FATAL]',
