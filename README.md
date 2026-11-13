@@ -179,22 +179,54 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
-## 카메라만 실행하고 AI 객체인식 제외
+## --skip-detech: Depth 전용 ROS2 발행 (AI, RGB, MJPEG 제외)
 
-`one_command_launch.py --skip-detech`는 Orbbec 카메라의 RGB + Depth
-프레임 수집을 유지하면서 YOLO/OpenVINO 모델 로드, 추론, 바운딩 박스
-표시를 생략합니다. `epoch22_openvino_model` 디렉터리가 필요하지 않습니다.
-웹 카메라 스트림(`/stream.mjpg`)과 준비 확인(`/health`)은 그대로
-사용합니다.
+`--skip-detech`는 일반 AI 카메라 스크립트 대신
+`amr_websocket/amr_depth_ros_publisher.py`를 실행합니다.
+Orbbec Depth Y16 프레임만 읽고, 다음 **두 토픽만** 발행합니다.
+
+| 토픽 | 타입 | 내용 |
+| --- | --- | --- |
+| `/camera/depth/image_raw` | `sensor_msgs/msg/Image` | `32FC1` 미터 단위 Depth, 실제 너비·높이, `step=width*4`, optical frame |
+| `/camera/registered_color/camera_info` | `sensor_msgs/msg/CameraInfo` | 동일 timestamp·frame·해상도, Depth 프로파일의 실제 `K`, distortion |
+
+`registered_color/camera_info`라는 이름이지만 **Depth에 대응하는 보정값**을 사용합니다.
+Depth 이미지에는 픽셀 단위 후처리 회전·크기 변경을 하지 않습니다.
+Orbbec SDK의 `get_depth_scale()`을 이용해 `Y16` 값을 미터로 변환합니다.
+
+`header.stamp`는 장치 측정 시각을 호스트 Unix 시각에 매핑한
+Orbbec global timestamp를 사용하며, 0이거나 지원되지 않으면 잘못된
+수신 시각으로 대체하지 않고 실패합니다. 카메라 SDK/펌웨어가 global
+timestamp를 지원해야 합니다.
+
+RGB 수집/디코딩, YOLO/OpenVINO, 바운딩 박스, MJPEG, HTTP 8090 포트,
+PointCloud·RGBD 이미지 발행을 하지 않습니다. **웹 관제 화면의 카메라
+미리보기도 이 모드에서는 제공되지 않습니다.**
 
 ```bash
-python3 -u one_command_launch.py --web-drive --host-ip 192.168.0.250 --skip-detech
+cd ~/hana-amr-project
+python3 -u one_command_launch.py --skip-detech --web-drive --host-ip 192.168.0.250 --see-log
 ```
 
-`--skip-camera`는 카메라 전체를 끄는 옵션이므로 위 명령에 같이
-사용하지 않습니다. 이 스크립트는 Depth를 내부적으로 수집하지만,
-Depth ROS2 토픽을 새로 발행하는 기능까지 추가한 것은 아닙니다.
-카메라 SDK, OpenCV 및 NumPy 의존성은 여전히 필요합니다.
+Depth 전용 실행 Python 환경에는 `numpy`, `rclpy`,
+`sensor_msgs`, `pyorbbecsdk`가 필요합니다. 환경이 분리되어 있다면
+`--camera-python`으로 해당 패키지를 모두 import할 수 있는 인터프리터를
+명시하세요. 이 모드는 ROS2 이미지 토픽이 준비됐는지 확인하며
+MJPEG `/health`를 검사하지 않습니다.
+
+**TF**: `map -> base_link -> camera_depth_optical_frame` 연결은
+기존 SLAM 및 실제 카메라 장착 위치를 반영하는 외부 TF 발행자가 제공해야
+합니다. 코드에 실제 장착 위치가 없으므로 임의의 정적 TF를 생성하지
+않습니다. Depth `header.frame_id`는 기본적으로
+`camera_depth_optical_frame`이며 필요하면 Depth 발행 노드를 직접 실행할
+때 `--frame-id`로 조정할 수 있습니다. TF가 해당 이미지 timestamp에서
+조회되는지 별도로 검증해야 합니다.
+
+```bash
+ros2 topic echo /camera/depth/image_raw --once --field header
+ros2 topic echo /camera/registered_color/camera_info --once
+ros2 run tf2_ros tf2_echo base_link camera_depth_optical_frame
+```
 
 ## ROS2 NumPy 호환성 사전 검사
 
