@@ -179,6 +179,19 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## CAN USB 장치 자동 탐색 (통합 런처)
+
+`one_command_launch.py`는 실행 시 `/dev/serial/by-id/`에서
+`FTDI_FT232R`가 이름에 포함된 장치를 대소문자 구분 없이 찾습니다.
+선택된 장치 경로를 모터 Enable 프로세스의 `--port`와 CAN ROS 노드의
+`AMR_CAN_PORT` 환경 변수에 동일하게 전달합니다. USB 일련번호가 바뀌어도
+통합 런처를 사용할 때는 코드를 수정하지 않아도 됩니다.
+
+장치가 없거나 여러 개 발견되거나 권한이 없으면 시작을 중단합니다.
+FT232R이라는 이름만으로 CAN 어댑터임을 보장할 수 없으므로 여러 어댑터를
+연결한 환경에서는 장치 식별을 별도로 구성해야 합니다.
+독립 실행하는 모터 Enable / CAN 노드에는 런처의 자동 탐색이 적용되지 않습니다.
+
 ## MicroStrain USB 장치 자동 탐색 (통합 런처)
 
 `one_command_launch.py`는 실행할 때마다 `/dev/serial/by-id/`에서 이름에
