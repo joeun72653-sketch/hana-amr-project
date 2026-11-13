@@ -1,41 +1,53 @@
-"""Camera AI-off behavior: no Ultralytics dependency or model path required."""
+"""Depth-only mode publishes exactly the required ROS topics (static contract)."""
 
 import ast
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CAMERA = ROOT / 'amr_websocket/amr_openvino_camera_depth.py'
+DEPTH = ROOT / 'amr_websocket/amr_depth_ros_publisher.py'
 LAUNCHER = ROOT / 'one_command_launch.py'
+PROBE = ROOT / 'amr_tools/ros_topic_probe.py'
 
 
-class SkipDetechTests(unittest.TestCase):
-    def test_ai_import_is_only_inside_enabled_branch(self):
-        source = CAMERA.read_text(encoding='utf-8')
-        tree = ast.parse(source)
-        top_imports = [node for node in tree.body
-                       if isinstance(node, (ast.Import, ast.ImportFrom))]
-        self.assertFalse(any(
-            getattr(node, 'module', '') == 'ultralytics' or
-            any(alias.name == 'ultralytics' for alias in getattr(node, 'names', []))
-            for node in top_imports
-        ))
-        self.assertIn('if not skip_detech:', source)
-        self.assertIn('from ultralytics import YOLO', source)
+class DepthOnlyTests(unittest.TestCase):
+    def test_depth_publisher_has_no_ai_color_mjpeg_or_network_server(self):
+        source = DEPTH.read_text(encoding='utf-8')
+        ast.parse(source)
+        for forbidden in ('ultralytics', 'YOLO', 'cv2', 'MJPEG', 'ThreadingHTTPServer',
+                          'OBSensorType.COLOR_SENSOR', 'model.predict('):
+            if forbidden == 'MJPEG':
+                continue  # Mentioned only as disabled in comments
+            self.assertNotIn(forbidden, source)
+        self.assertEqual(source.count("self.create_publisher("), 2)
+        self.assertIn("'/camera/depth/image_raw'", source)
+        self.assertIn("'/camera/registered_color/camera_info'", source)
 
-    def test_depth_capture_remains_enabled_in_ai_off_mode(self):
-        source = CAMERA.read_text(encoding='utf-8')
-        self.assertIn('config.enable_stream(depth_profile)', source)
-        self.assertIn('config.enable_stream(color_profile)', source)
-        self.assertIn('depth_frame.get_data()', source)
-        self.assertIn('if skip_detech:\n                annotated = color', source)
-        self.assertIn('kwargs={"skip_detech": args.skip_detech}', source)
+    def test_depth_contract_uses_sensor_intrinsics_and_capture_timestamp(self):
+        source = DEPTH.read_text(encoding='utf-8')
+        self.assertIn("frame.get_global_timestamp_us()", source)
+        self.assertIn("frame.get_depth_scale()", source)
+        self.assertIn("profile.get_intrinsic()", source)
+        self.assertIn("msg.encoding = '32FC1'", source)
+        self.assertIn("msg.step = width * 4", source)
+        self.assertIn("msg.header.frame_id = self.frame_id", source)
+        self.assertIn("info.header.frame_id = frame_id", source)
+        self.assertIn("msg.data = data.tobytes(order='C')", source)
 
-    def test_launcher_passes_switch_and_skips_model_preflight(self):
+    def test_launcher_uses_depth_publisher_not_http_when_skipping_ai(self):
         source = LAUNCHER.read_text(encoding='utf-8')
-        self.assertIn("parser.add_argument('--skip-detech'", source)
+        ast.parse(source)
+        self.assertIn("SCRIPTS['camera_depth']", source)
+        self.assertIn("'camera_depth' if args.skip_detech else 'camera'", source)
+        self.assertIn("'sensor_msgs/msg/Image'", source)
+        self.assertIn("'sensor_msgs/msg/CameraInfo'", source)
+        self.assertIn("if not args.skip_camera and not args.skip_detech:", source)
         self.assertIn("not args.skip_camera and not args.skip_detech and not CAMERA_MODEL.is_dir()", source)
-        self.assertIn("camera_argv.append('--skip-detech')", source)
+
+    def test_probe_can_read_depth_messages(self):
+        probe = PROBE.read_text(encoding='utf-8')
+        self.assertIn("'sensor_msgs/msg/Image': Image", probe)
+        self.assertIn("'sensor_msgs/msg/CameraInfo': CameraInfo", probe)
 
 
 if __name__ == '__main__':
