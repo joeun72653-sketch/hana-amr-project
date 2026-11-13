@@ -81,6 +81,12 @@ class DepthPublisher(Node):
         super().__init__('amr_orbbec_depth_only')
         self.frame_id = frame_id
         self.pipeline = Pipeline()
+        device = self.pipeline.get_device()
+        if not device.is_global_timestamp_supported():
+            raise RuntimeError(
+                'Orbbec device does not support global capture timestamps; '
+                'cannot satisfy measurement-time header.stamp requirement')
+        device.enable_global_timestamp(True)
         self.config = Config()
         profiles = self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
         self.profile = profiles.get_video_stream_profile(width, height, OBFormat.Y16, fps)
