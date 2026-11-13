@@ -179,9 +179,9 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
-## --skip-detech: Depth 전용 ROS2 발행 (AI, RGB, MJPEG 제외)
+## --camera-slam: Depth 전용 ROS2 발행 (AI, RGB, MJPEG 제외)
 
-`--skip-detech`는 일반 AI 카메라 스크립트 대신
+`--camera-slam`는 일반 AI 카메라 스크립트 대신
 `amr_websocket/amr_depth_ros_publisher.py`를 실행합니다.
 Orbbec Depth Y16 프레임만 읽고, 다음 **두 토픽만** 발행합니다.
 기본 Depth 스트림 요청 프로파일은 **640×480, 15 Hz, Y16**입니다. 해당 프로파일은 실제 카메라/SDK에서 제공되어야 하며, 지원되지 않으면 자동으로 다른 해상도로 변경하지 않습니다.
@@ -206,7 +206,7 @@ PointCloud·RGBD 이미지 발행을 하지 않습니다. **웹 관제 화면의
 
 ```bash
 cd ~/hana-amr-project
-python3 -u one_command_launch.py --skip-detech --web-drive --host-ip 192.168.0.250 --see-log
+python3 -u one_command_launch.py --camera-slam --web-drive --host-ip 192.168.0.250 --see-log
 ```
 
 Depth 전용 실행 Python 환경에는 `numpy`, `rclpy`,
