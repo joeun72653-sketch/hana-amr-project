@@ -161,6 +161,36 @@ def source_ros_environment() -> dict[str, str]:
     return env
 
 
+def verify_ros_numpy_environment(env: dict[str, str], py: str) -> None:
+    """Fail before motor initialization if NumPy and ROS Python are incompatible.
+
+    Run in the same environment as managed ROS subprocesses, not the
+    invoking shell's potentially different Python environment.
+    """
+    probe = (
+        'import numpy, rclpy; '
+        'from sensor_msgs.msg import Imu; '
+        'from std_msgs.msg import String; '
+        'print(numpy.__version__ + " " + numpy.__file__)'
+    )
+    try:
+        result = subprocess.run(
+            [py, '-c', probe], env=env, cwd=ROOT,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LaunchError(f'ROS/NumPy environment preflight could not run: {exc}') from exc
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[-1500:]
+        raise LaunchError(
+            'ROS/NumPy Python environment failed before motor startup. '
+            'Check NumPy ABI compatibility and Python package paths '
+            '(especially /usr/local and PYTHONPATH). '
+            f'Python={py}; details: {detail}'
+        )
+    print(f'[PYTHON] ROS/NumPy import OK: {result.stdout.strip()}', flush=True)
+
+
 def configure_local_ros_network(env: dict[str, str]) -> None:
     """Limit managed ROS2 DDS traffic to loopback; fail on unknown middleware.
 
@@ -632,6 +662,7 @@ def main() -> int:
     if not shutil.which('ros2', path=env.get('PATH')):
         raise LaunchError('ros2 CLI is unavailable after sourcing setup.bash')
     py = shutil.which('python3', path=env.get('PATH')) or sys.executable
+    verify_ros_numpy_environment(env, py)
     cam_py = choose_camera_python(args.camera_python, py)
     # Bound ports are checked before CAN drive initialization begins.
     ports = []
