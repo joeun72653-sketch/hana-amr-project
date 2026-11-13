@@ -179,6 +179,18 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## ROS2 NumPy 호환성 사전 검사
+
+통합 런처는 ROS2 환경을 로드할 때 `PYTHONNOUSERSITE=1`을 설정하고,
+모터 Enable 전에 관리 프로세스와 동일한 Python 환경으로 `numpy`,
+`rclpy`, ROS 메시지 타입을 import합니다. 성공하면 `[PYTHON] ROS/NumPy
+import OK:` 로그에 NumPy 버전과 실제 import 위치를 출력합니다. 실패하면
+모터 구동 전에 종료하며, NumPy ABI/패키지 경로 오류를 표시합니다.
+
+이는 NumPy를 자동 설치·다운그레이드하는 기능이 아니라 충돌을 조기에
+탐지하는 검사입니다. `--dry-run`에서는 하드웨어와 Python import 검사
+모두 생략합니다.
+
 ## 새 IPC에서 웹 접속 IP 지정
 
 `one_command_launch.py` 실행 시 `--host-ip`로 현재 IPC에 실제로 할당된
