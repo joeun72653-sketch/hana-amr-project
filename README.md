@@ -184,6 +184,7 @@ python3 -u amr_openvino_camera_depth.py
 `--skip-detech`는 일반 AI 카메라 스크립트 대신
 `amr_websocket/amr_depth_ros_publisher.py`를 실행합니다.
 Orbbec Depth Y16 프레임만 읽고, 다음 **두 토픽만** 발행합니다.
+기본 Depth 스트림 요청 프로파일은 **960×600, 20 Hz, Y16**입니다. 해당 프로파일은 실제 카메라/SDK에서 제공되어야 하며, 지원되지 않으면 자동으로 다른 해상도로 변경하지 않습니다.
 
 | 토픽 | 타입 | 내용 |
 | --- | --- | --- |
