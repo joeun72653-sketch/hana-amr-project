@@ -149,9 +149,9 @@ class DepthPublisher(Node):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--frame-id', default='camera_depth_optical_frame')
-    parser.add_argument('--width', type=int, default=640)
-    parser.add_argument('--height', type=int, default=480)
-    parser.add_argument('--fps', type=int, default=30)
+    parser.add_argument('--width', type=int, default=960)
+    parser.add_argument('--height', type=int, default=600)
+    parser.add_argument('--fps', type=int, default=20)
     args = parser.parse_args()
     if not args.frame_id or args.frame_id.startswith('/'):
         parser.error('--frame-id must be a relative TF frame name')
