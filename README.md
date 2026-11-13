@@ -179,6 +179,18 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## MicroStrain USB 장치 자동 탐색 (통합 런처)
+
+`one_command_launch.py`는 실행할 때마다 `/dev/serial/by-id/`에서 이름에
+`Microstrain`이 포함된 장치를 대소문자 구분 없이 탐색합니다.
+USB 시리얼 번호가 변경되어도 원래 `amr_imu/config/microstrain.yml`은 변경하지 않고,
+`~/amr_one_command_logs/microstrain_runtime.yml`에 실행 전용 설정을 생성하여
+MicroStrain ROS 드라이버에 전달합니다. `--log-dir`을 지정한 경우 해당 디렉터리를 사용합니다.
+
+연결된 장치가 없거나 둘 이상 있거나 읽기/쓰기 권한이 없으면 안전하게 시작을 중단합니다.
+`--skip-imu` 또는 `--external-imu-driver`를 사용하면 자동 탐색하지 않습니다.
+**직접 실행하는 `ros2 launch microstrain_inertial_driver ...`에는 이 자동 탐색이 적용되지 않습니다.**
+
 ## 8. IMU (필요할 때)
 
 **터미널 F — MicroStrain 드라이버:**
