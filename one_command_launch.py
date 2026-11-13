@@ -554,6 +554,7 @@ def main() -> int:
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
     parser.add_argument('--skip-calibration', action='store_true')
+    parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
                         help='Do not start the HTML dashboard HTTP server on port 8000')
     parser.add_argument('--local-ros-only', action='store_true',
@@ -570,6 +571,14 @@ def main() -> int:
     parser.add_argument('--log-dir', type=Path,
                         default=Path.home() / 'amr_one_command_logs')
     args = parser.parse_args()
+    if args.host_ip:
+        try:
+            import ipaddress
+            address = ipaddress.ip_address(args.host_ip)
+            if address.version != 4 or address.is_unspecified or address.is_multicast:
+                raise ValueError('must be a specific IPv4 address')
+        except ValueError as exc:
+            parser.error(f'--host-ip requires a valid local IPv4 address: {exc}')
     if args.local_ros_only and args.web_drive:
         parser.error('--web-drive conflicts with --local-ros-only')
     if args.local_ros_only and args.external_imu_driver and not args.skip_imu:
@@ -587,6 +596,7 @@ def main() -> int:
         print('ROS: Jazzy, domain 31, custom_amr_ws and real_amr overlays if present')
         if args.local_ros_only:
             print('  LOCAL ROS ONLY: loopback DDS; no external HTTP/WebSocket/camera')
+        print('Phone Web UI / calibration host:', args.host_ip or os.environ.get('AMR_CAL_HOST', '192.168.0.35'))
         print('Logs: one reusable set of *.log files under', args.log_dir.expanduser())
         print('Stages:')
         if not args.skip_imu:
@@ -612,6 +622,9 @@ def main() -> int:
 
     validate_inputs(args)
     env = source_ros_environment()
+    if args.host_ip:
+        env['AMR_CAL_HOST'] = args.host_ip
+        print(f'[NETWORK] AMR LAN host configured: {args.host_ip}', flush=True)
     env['AMR_CAN_PORT'] = can_serial_port()
     print(f"[CAN] Auto-detected FTDI FT232R adapter: {env['AMR_CAN_PORT']}", flush=True)
     if args.local_ros_only:
