@@ -181,6 +181,8 @@ python3 -u amr_openvino_camera_depth.py
 
 ## --camera-slam: Depth 전용 ROS2 발행 (AI, RGB, MJPEG 제외)
 
+이 모드는 **카메라 기반 3D SLAM에 필요한 Depth 영상과 Depth 내부 파라미터만 ROS2로 공급하기 위한 기능**입니다. OpenVINO 모델 오류를 임시 회피하는 옵션이 아닙니다. SLAM에서 사용하지 않는 RGB, 객체인식 결과, MJPEG 영상 등은 생성·발행하지 않아 카메라 처리량과 불필요한 데이터 전송을 줄입니다. `--skip-camera`와 목적이 다릅니다.
+
 `--camera-slam`는 일반 AI 카메라 스크립트 대신
 `amr_websocket/amr_depth_ros_publisher.py`를 실행합니다.
 Orbbec Depth Y16 프레임만 읽고, 다음 **두 토픽만** 발행합니다.
