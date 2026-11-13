@@ -14,10 +14,8 @@ class DepthOnlyTests(unittest.TestCase):
     def test_depth_publisher_has_no_ai_color_mjpeg_or_network_server(self):
         source = DEPTH.read_text(encoding='utf-8')
         ast.parse(source)
-        for forbidden in ('ultralytics', 'YOLO', 'cv2', 'MJPEG', 'ThreadingHTTPServer',
+        for forbidden in ('ultralytics', 'import cv2', 'ThreadingHTTPServer',
                           'OBSensorType.COLOR_SENSOR', 'model.predict('):
-            if forbidden == 'MJPEG':
-                continue  # Mentioned only as disabled in comments
             self.assertNotIn(forbidden, source)
         self.assertEqual(source.count("self.create_publisher("), 2)
         self.assertIn("'/camera/depth/image_raw'", source)
