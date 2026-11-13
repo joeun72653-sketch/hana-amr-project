@@ -179,6 +179,23 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## 카메라만 실행하고 AI 객체인식 제외
+
+`one_command_launch.py --skip-detech`는 Orbbec 카메라의 RGB + Depth
+프레임 수집을 유지하면서 YOLO/OpenVINO 모델 로드, 추론, 바운딩 박스
+표시를 생략합니다. `epoch22_openvino_model` 디렉터리가 필요하지 않습니다.
+웹 카메라 스트림(`/stream.mjpg`)과 준비 확인(`/health`)은 그대로
+사용합니다.
+
+```bash
+python3 -u one_command_launch.py --web-drive --host-ip 192.168.0.250 --skip-detech
+```
+
+`--skip-camera`는 카메라 전체를 끄는 옵션이므로 위 명령에 같이
+사용하지 않습니다. 이 스크립트는 Depth를 내부적으로 수집하지만,
+Depth ROS2 토픽을 새로 발행하는 기능까지 추가한 것은 아닙니다.
+카메라 SDK, OpenCV 및 NumPy 의존성은 여전히 필요합니다.
+
 ## ROS2 NumPy 호환성 사전 검사
 
 통합 런처는 ROS2 환경을 로드할 때 `PYTHONNOUSERSITE=1`을 설정하고,
