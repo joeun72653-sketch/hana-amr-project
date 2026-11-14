@@ -43,6 +43,7 @@ SCRIPTS = {
     'imu_ws': ROOT / 'amr_imu/amr_imu_ws.py',
     'ros_probe': ROOT / 'amr_tools/ros_topic_probe.py',
     'camera': ROOT / 'amr_websocket/amr_openvino_camera_depth.py',
+    'camera_depth': ROOT / 'amr_websocket/amr_depth_ros_publisher.py',
     'calibration': ROOT / 'amr_websocket/amr_calibration_manager.py',
     'can': CAN_SCRIPT,
     'motor_enable': ROOT / 'amr_motor_control/amr_enable_motors.py',
@@ -161,6 +162,36 @@ def source_ros_environment() -> dict[str, str]:
     return env
 
 
+def verify_ros_numpy_environment(env: dict[str, str], py: str) -> None:
+    """Fail before motor initialization if NumPy and ROS Python are incompatible.
+
+    Run in the same environment as managed ROS subprocesses, not the
+    invoking shell's potentially different Python environment.
+    """
+    probe = (
+        'import numpy, rclpy; '
+        'from sensor_msgs.msg import Imu; '
+        'from std_msgs.msg import String; '
+        'print(numpy.__version__ + " " + numpy.__file__)'
+    )
+    try:
+        result = subprocess.run(
+            [py, '-c', probe], env=env, cwd=ROOT,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LaunchError(f'ROS/NumPy environment preflight could not run: {exc}') from exc
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[-1500:]
+        raise LaunchError(
+            'ROS/NumPy Python environment failed before motor startup. '
+            'Check NumPy ABI compatibility and Python package paths '
+            '(especially /usr/local and PYTHONPATH). '
+            f'Python={py}; details: {detail}'
+        )
+    print(f'[PYTHON] ROS/NumPy import OK: {result.stdout.strip()}', flush=True)
+
+
 def configure_local_ros_network(env: dict[str, str]) -> None:
     """Limit managed ROS2 DDS traffic to loopback; fail on unknown middleware.
 
@@ -214,11 +245,57 @@ def verify_can_import_source() -> None:
 
 
 def can_serial_port() -> str:
-    can_source = CAN_SCRIPT.read_text(encoding='utf-8')
-    match = re.search(r"^CAN_PORT\s*=\s*['\"]([^'\"]+)['\"]", can_source, re.M)
-    if not match:
-        raise LaunchError('CAN_PORT missing in CAN worker')
-    return match.group(1)
+    """Auto-detect the sole FTDI FT232R adapter used by the CAN controller."""
+    device_dir = Path('/dev/serial/by-id')
+    if not device_dir.is_dir():
+        raise LaunchError(f'CAN serial directory is missing: {device_dir}')
+    matches = sorted(path for path in device_dir.iterdir()
+                     if 'ftdi_ft232r' in path.name.casefold() and path.exists())
+    if not matches:
+        raise LaunchError('No FTDI_FT232R CAN serial device found under /dev/serial/by-id/')
+    if len(matches) != 1:
+        raise LaunchError('Multiple FTDI_FT232R serial devices found; CAN device is ambiguous: '
+                          + ', '.join(str(path) for path in matches))
+    port = matches[0]
+    if not os.access(port, os.R_OK | os.W_OK):
+        raise LaunchError(f'CAN serial device is not readable/writable: {port}. '
+                          'Check dialout/group permissions.')
+    return str(port)
+
+
+def resolve_microstrain_port() -> Path:
+    """Select the sole connected MicroStrain serial device by USB name."""
+    device_dir = Path('/dev/serial/by-id')
+    if not device_dir.is_dir():
+        raise LaunchError(f'MicroStrain serial directory is missing: {device_dir}')
+    matches = sorted(path for path in device_dir.iterdir()
+                     if 'microstrain' in path.name.casefold() and path.exists())
+    if not matches:
+        raise LaunchError('No MicroStrain serial device found under /dev/serial/by-id/')
+    if len(matches) != 1:
+        raise LaunchError('Multiple MicroStrain serial devices found: '
+                          + ', '.join(str(path) for path in matches))
+    port = matches[0]
+    if not os.access(port, os.R_OK | os.W_OK):
+        raise LaunchError(f'MicroStrain serial device is not readable/writable: {port}. '
+                          'Check dialout/group permissions.')
+    return port
+
+
+def prepare_microstrain_config(log_dir: Path) -> Path:
+    """Keep checked-in YAML unchanged; override only the runtime serial port."""
+    source = ROOT / 'amr_imu/config/microstrain.yml'
+    contents = source.read_text(encoding='utf-8')
+    pattern = r"""^(\s*port:\s*)['"]?[^\s'"#]+['"]?"""
+    if len(re.findall(pattern, contents, re.M)) != 1:
+        raise LaunchError('MicroStrain config must contain exactly one port parameter')
+    port = resolve_microstrain_port()
+    contents = re.sub(pattern, lambda m: m.group(1) + '"' + str(port) + '"',
+                      contents, count=1, flags=re.M)
+    config = log_dir / 'microstrain_runtime.yml'
+    config.write_text(contents, encoding='utf-8')
+    print(f'[IMU] Auto-detected MicroStrain: {port}', flush=True)
+    return config
 
 
 def validate_inputs(args: argparse.Namespace) -> None:
@@ -232,7 +309,7 @@ def validate_inputs(args: argparse.Namespace) -> None:
         if not args.local_ros_only:
             required.append('imu_ws')
     if not args.skip_camera:
-        required.append('camera')
+        required.append('camera_depth' if args.camera_slam else 'camera')
     if args.with_viewers:
         required += ['rpm_viewer', 'encoder_viewer']
     for name in required:
@@ -243,25 +320,14 @@ def validate_inputs(args: argparse.Namespace) -> None:
     if not (ROOT / 'amr_imu/config/microstrain.yml').is_file() and not args.skip_imu:
         raise LaunchError('MicroStrain config missing')
     if not args.skip_imu and not args.external_imu_driver:
-        config_text = (ROOT / 'amr_imu/config/microstrain.yml').read_text(encoding='utf-8')
-        port_match = re.search(r'^\s+port:\s*[\'\"]?([^\'\"\s#]+)', config_text, re.M)
-        if not port_match:
-            raise LaunchError('MicroStrain config has no port parameter')
-        imu_port = Path(port_match.group(1))
-        if not imu_port.exists():
-            raise LaunchError(f'MicroStrain serial device is missing: {imu_port}')
-        if not os.access(imu_port, os.R_OK | os.W_OK):
-            raise LaunchError(f'MicroStrain serial device is not readable/writable: {imu_port}. '
-                              'Check dialout/group permissions and reconnect the device.')
+        resolve_microstrain_port()
     if CAL_FLAG.exists():
         raise LaunchError(f'Calibration flag already exists: {CAL_FLAG}. '
                           'Check whether calibration is still running before clearing it.')
-    if not args.skip_camera and not CAMERA_MODEL.is_dir():
+    if not args.skip_camera and not args.camera_slam and not CAMERA_MODEL.is_dir():
         raise LaunchError(f'OpenVINO model missing: {CAMERA_MODEL}')
     verify_can_import_source()
-    port = can_serial_port()
-    if not Path(port).exists():
-        raise LaunchError(f'CAN serial device missing: {port}')
+    can_serial_port()
 
 
 class Supervisor:
@@ -518,7 +584,16 @@ def main() -> int:
     parser.add_argument('--external-imu-driver', action='store_true',
                         help='Wait for an existing /imu/data publisher')
     parser.add_argument('--skip-camera', action='store_true')
+    parser.add_argument('--camera-slam', action='store_true',
+                        help='Publish depth-only ROS Image+CameraInfo; disable RGB, MJPEG and AI')
+    parser.add_argument('--depth-width', type=int, default=640,
+                        help='Orbbec Depth width in camera-slam mode')
+    parser.add_argument('--depth-height', type=int, default=480,
+                        help='Orbbec Depth height in camera-slam mode')
+    parser.add_argument('--depth-fps', type=int, default=15,
+                        help='Orbbec Depth FPS in camera-slam mode')
     parser.add_argument('--skip-calibration', action='store_true')
+    parser.add_argument('--host-ip', help='AMR LAN IP for calibration HTTP and phone Web UI (overrides AMR_CAL_HOST)')
     parser.add_argument('--skip-web-ui', action='store_true',
                         help='Do not start the HTML dashboard HTTP server on port 8000')
     parser.add_argument('--local-ros-only', action='store_true',
@@ -531,10 +606,18 @@ def main() -> int:
                         help='Explicitly allow the legacy Web WASD bridge to publish nonzero RPM')
     parser.add_argument('--with-viewers', action='store_true',
                         help='Also start actual-RPM and encoder text viewers')
-    parser.add_argument('--camera-python', help='Interpreter with cv2, ultralytics, pyorbbecsdk')
+    parser.add_argument('--camera-python', help='Camera interpreter (depth-only mode additionally requires rclpy and ROS messages)')
     parser.add_argument('--log-dir', type=Path,
                         default=Path.home() / 'amr_one_command_logs')
     args = parser.parse_args()
+    if args.host_ip:
+        try:
+            import ipaddress
+            address = ipaddress.ip_address(args.host_ip)
+            if address.version != 4 or address.is_unspecified or address.is_multicast:
+                raise ValueError('must be a specific IPv4 address')
+        except ValueError as exc:
+            parser.error(f'--host-ip requires a valid local IPv4 address: {exc}')
     if args.local_ros_only and args.web_drive:
         parser.error('--web-drive conflicts with --local-ros-only')
     if args.local_ros_only and args.external_imu_driver and not args.skip_imu:
@@ -552,6 +635,7 @@ def main() -> int:
         print('ROS: Jazzy, domain 31, custom_amr_ws and real_amr overlays if present')
         if args.local_ros_only:
             print('  LOCAL ROS ONLY: loopback DDS; no external HTTP/WebSocket/camera')
+        print('Phone Web UI / calibration host:', args.host_ip or os.environ.get('AMR_CAL_HOST', '192.168.0.35'))
         print('Logs: one reusable set of *.log files under', args.log_dir.expanduser())
         print('Stages:')
         if not args.skip_imu:
@@ -559,7 +643,8 @@ def main() -> int:
                   + ') -> /imu/data -> RPY converter'
                   + ('' if args.local_ros_only else ' -> IMU WebSocket :8766'))
         if not args.skip_camera:
-            print('  OpenVINO + Orbbec camera -> /health :8090')
+            print('  ' + ('Orbbec Depth Image + CameraInfo ROS topics (no RGB/MJPEG/AI)' if args.camera_slam
+                          else 'OpenVINO + Orbbec camera -> /health :8090'))
         print('  Motor enable preflight -> verify zero/mode; auto-enable only if required')
         print('  CANopen controller -> verified zero + /amr_motor_state')
         if not args.skip_bridge:
@@ -576,12 +661,20 @@ def main() -> int:
         return 0
 
     validate_inputs(args)
+    if any(value <= 0 for value in (args.depth_width, args.depth_height, args.depth_fps)):
+        raise LaunchError('Depth width, height and fps must be positive')
     env = source_ros_environment()
+    if args.host_ip:
+        env['AMR_CAL_HOST'] = args.host_ip
+        print(f'[NETWORK] AMR LAN host configured: {args.host_ip}', flush=True)
+    env['AMR_CAN_PORT'] = can_serial_port()
+    print(f"[CAN] Auto-detected FTDI FT232R adapter: {env['AMR_CAN_PORT']}", flush=True)
     if args.local_ros_only:
         configure_local_ros_network(env)
     if not shutil.which('ros2', path=env.get('PATH')):
         raise LaunchError('ros2 CLI is unavailable after sourcing setup.bash')
     py = shutil.which('python3', path=env.get('PATH')) or sys.executable
+    verify_ros_numpy_environment(env, py)
     cam_py = choose_camera_python(args.camera_python, py)
     # Bound ports are checked before CAN drive initialization begins.
     ports = []
@@ -589,7 +682,7 @@ def main() -> int:
         ports.append(("127.0.0.1", 8000))
     if not args.skip_imu and not args.local_ros_only:
         ports.append(("127.0.0.1", 8766))
-    if not args.skip_camera:
+    if not args.skip_camera and not args.camera_slam:
         ports.append(("127.0.0.1", 8090))
     if not args.skip_calibration:
         ports.append((env.get('AMR_CAL_HOST', '192.168.0.35'),
@@ -613,7 +706,7 @@ def main() -> int:
     try:
         if not args.skip_imu:
             if not args.external_imu_driver:
-                config = ROOT / 'amr_imu/config/microstrain.yml'
+                config = prepare_microstrain_config(logs)
                 supervisor.start('imu_driver', ['ros2', 'launch', 'microstrain_inertial_driver',
                                                'microstrain_launch.py', f'params_file:={config}'],
                                  fatal_markers=('[FATAL]',
@@ -629,10 +722,22 @@ def main() -> int:
                 supervisor.until('IMU WebSocket', lambda: port_open('127.0.0.1', 8766), 10)
 
         if not args.skip_camera:
-            supervisor.start('camera', [cam_py, str(SCRIPTS['camera'])],
-                             fatal_markers=('[CAMERA ERROR]', '[CAMERA] 종료'))
-            supervisor.wait_http('AI camera', 'http://127.0.0.1:8090/health',
-                                 lambda body: body == b'CAMERA_OK', 90)
+            if args.camera_slam:
+                supervisor.start('camera', [cam_py, str(SCRIPTS['camera_depth']),
+                                            '--width', str(args.depth_width),
+                                            '--height', str(args.depth_height),
+                                            '--fps', str(args.depth_fps)],
+                                 fatal_markers=('[CAMERA ERROR]',))
+                supervisor.wait_topic('Depth camera', '/camera/depth/image_raw',
+                                      'sensor_msgs/msg/Image', 45, best_effort=True)
+                supervisor.wait_topic('Depth intrinsics',
+                                      '/camera/registered_color/camera_info',
+                                      'sensor_msgs/msg/CameraInfo', 15, best_effort=True)
+            else:
+                supervisor.start('camera', [cam_py, str(SCRIPTS['camera'])],
+                                 fatal_markers=('[CAMERA ERROR]', '[CAMERA] 종료'))
+                supervisor.wait_http('Camera', 'http://127.0.0.1:8090/health',
+                                     lambda body: body == b'CAMERA_OK', 90)
 
         ensure_motors_enabled(env, py, logs, see_log=args.see_log)
 
@@ -691,7 +796,7 @@ def main() -> int:
                 if not args.skip_web_ui:
                     checks.append(('Web UI', 'http://127.0.0.1:8000/index.html',
                                    lambda b: b'<html' in b.lower()))
-                if not args.skip_camera:
+                if not args.skip_camera and not args.camera_slam:
                     checks.append(('Camera', 'http://127.0.0.1:8090/health',
                                    lambda b: b == b'CAMERA_OK'))
                 if not args.skip_calibration:

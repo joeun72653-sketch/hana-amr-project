@@ -13,6 +13,7 @@ the next command. Physical stop confirmation is monitored asynchronously.
 """
 
 import json
+import os
 import math
 import queue
 import sys
@@ -20,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-CAN_PORT = '/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG04BIQZ-if00-port0'
+CAN_PORT = os.environ.get('AMR_CAN_PORT', '/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG04BIQZ-if00-port0')
 CAN_BAUD = 115200
 # CANopen 0x60FF carries a signed 32-bit integer. This is a wire-format bound,
 # not a software speed limit or a verified safe mechanical speed.

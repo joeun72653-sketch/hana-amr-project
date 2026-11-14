@@ -11,11 +11,13 @@ import time
 
 import rclpy
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, Image, CameraInfo
 from std_msgs.msg import String
 
 MESSAGE_TYPES = {
     'sensor_msgs/msg/Imu': Imu,
+    'sensor_msgs/msg/Image': Image,
+    'sensor_msgs/msg/CameraInfo': CameraInfo,
     'std_msgs/msg/String': String,
 }
 

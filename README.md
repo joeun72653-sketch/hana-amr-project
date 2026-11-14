@@ -179,6 +179,110 @@ python3 -u amr_openvino_camera_depth.py
 - **중요:** Ubuntu에서 별도로 수정했던 *OpenVINO + Depth 토픽 통합판*이 GitHub 기본 파일과 동일하다고 가정하지 마세요. `/amr/depth_obstacle` 토픽을 발행하는지는 실제 로컬 소스를 확인해야 합니다.
 - 카메라 드라이버 라이브러리 충돌이 발생할 경우 Depth 전용 실행에서 사용했던 `LD_LIBRARY_PATH` 설정을 검토합니다.
 
+## --camera-slam: Depth 전용 ROS2 발행 (AI, RGB, MJPEG 제외)
+
+이 모드는 **카메라 기반 3D SLAM에 필요한 Depth 영상과 Depth 내부 파라미터만 ROS2로 공급하기 위한 기능**입니다. OpenVINO 모델 오류를 임시 회피하는 옵션이 아닙니다. SLAM에서 사용하지 않는 RGB, 객체인식 결과, MJPEG 영상 등은 생성·발행하지 않아 카메라 처리량과 불필요한 데이터 전송을 줄입니다. `--skip-camera`와 목적이 다릅니다.
+
+`--camera-slam`는 일반 AI 카메라 스크립트 대신
+`amr_websocket/amr_depth_ros_publisher.py`를 실행합니다.
+Orbbec Depth Y16 프레임만 읽고, 다음 **두 토픽만** 발행합니다.
+기본 Depth 스트림 요청 프로파일은 **640×480, 15 Hz, Y16**입니다. 해당 프로파일은 실제 카메라/SDK에서 제공되어야 하며, 지원되지 않으면 자동으로 다른 해상도로 변경하지 않습니다.
+
+| 토픽 | 타입 | 내용 |
+| --- | --- | --- |
+| `/camera/depth/image_raw` | `sensor_msgs/msg/Image` | `32FC1` 미터 단위 Depth, 실제 너비·높이, `step=width*4`, optical frame |
+| `/camera/registered_color/camera_info` | `sensor_msgs/msg/CameraInfo` | 동일 timestamp·frame·해상도, Depth 프로파일의 실제 `K`, distortion |
+
+`registered_color/camera_info`라는 이름이지만 **Depth에 대응하는 보정값**을 사용합니다.
+Depth 이미지에는 픽셀 단위 후처리 회전·크기 변경을 하지 않습니다.
+Orbbec SDK의 `get_depth_scale()`을 이용해 `Y16` 값을 미터로 변환합니다.
+
+`header.stamp`는 장치 측정 시각을 호스트 Unix 시각에 매핑한
+Orbbec global timestamp를 사용하며, 0이거나 지원되지 않으면 잘못된
+수신 시각으로 대체하지 않고 실패합니다. 카메라 SDK/펌웨어가 global
+timestamp를 지원해야 합니다.
+
+RGB 수집/디코딩, YOLO/OpenVINO, 바운딩 박스, MJPEG, HTTP 8090 포트,
+PointCloud·RGBD 이미지 발행을 하지 않습니다. **웹 관제 화면의 카메라
+미리보기도 이 모드에서는 제공되지 않습니다.**
+
+```bash
+cd ~/hana-amr-project
+python3 -u one_command_launch.py --camera-slam --web-drive --host-ip 192.168.0.250 --see-log
+```
+
+Depth 전용 실행 Python 환경에는 `numpy`, `rclpy`,
+`sensor_msgs`, `pyorbbecsdk`가 필요합니다. 환경이 분리되어 있다면
+`--camera-python`으로 해당 패키지를 모두 import할 수 있는 인터프리터를
+명시하세요. 이 모드는 ROS2 이미지 토픽이 준비됐는지 확인하며
+MJPEG `/health`를 검사하지 않습니다.
+
+**TF**: `map -> base_link -> camera_depth_optical_frame` 연결은
+기존 SLAM 및 실제 카메라 장착 위치를 반영하는 외부 TF 발행자가 제공해야
+합니다. 코드에 실제 장착 위치가 없으므로 임의의 정적 TF를 생성하지
+않습니다. Depth `header.frame_id`는 기본적으로
+`camera_depth_optical_frame`이며 필요하면 Depth 발행 노드를 직접 실행할
+때 `--frame-id`로 조정할 수 있습니다. TF가 해당 이미지 timestamp에서
+조회되는지 별도로 검증해야 합니다.
+
+```bash
+ros2 topic echo /camera/depth/image_raw --once --field header
+ros2 topic echo /camera/registered_color/camera_info --once
+ros2 run tf2_ros tf2_echo base_link camera_depth_optical_frame
+```
+
+## ROS2 NumPy 호환성 사전 검사
+
+통합 런처는 ROS2 환경을 로드할 때 `PYTHONNOUSERSITE=1`을 설정하고,
+모터 Enable 전에 관리 프로세스와 동일한 Python 환경으로 `numpy`,
+`rclpy`, ROS 메시지 타입을 import합니다. 성공하면 `[PYTHON] ROS/NumPy
+import OK:` 로그에 NumPy 버전과 실제 import 위치를 출력합니다. 실패하면
+모터 구동 전에 종료하며, NumPy ABI/패키지 경로 오류를 표시합니다.
+
+이는 NumPy를 자동 설치·다운그레이드하는 기능이 아니라 충돌을 조기에
+탐지하는 검사입니다. `--dry-run`에서는 하드웨어와 Python import 검사
+모두 생략합니다.
+
+## 새 IPC에서 웹 접속 IP 지정
+
+`one_command_launch.py` 실행 시 `--host-ip`로 현재 IPC에 실제로 할당된
+LAN IPv4 주소를 지정할 수 있습니다. 캘리브레이션 서버(8877) 바인딩 주소와
+휴대폰 접속 안내 URL(8000)에 모두 적용됩니다.
+
+```bash
+python3 -u one_command_launch.py --skip-camera --web-drive --host-ip 192.168.0.250
+```
+
+기존 `AMR_CAL_HOST` 환경변수도 계속 지원하며 `--host-ip`가 우선합니다.
+둘 다 지정하지 않으면 이전 기본값 `192.168.0.35`를 유지합니다.
+주소는 반드시 해당 PC에 할당되어 있어야 합니다(`ip -4 addr`로 확인).
+이 옵션은 Windows WebSocket 서버(`192.168.0.31:8765`)의 주소는 변경하지 않습니다.
+
+## CAN USB 장치 자동 탐색 (통합 런처)
+
+`one_command_launch.py`는 실행 시 `/dev/serial/by-id/`에서
+`FTDI_FT232R`가 이름에 포함된 장치를 대소문자 구분 없이 찾습니다.
+선택된 장치 경로를 모터 Enable 프로세스의 `--port`와 CAN ROS 노드의
+`AMR_CAN_PORT` 환경 변수에 동일하게 전달합니다. USB 일련번호가 바뀌어도
+통합 런처를 사용할 때는 코드를 수정하지 않아도 됩니다.
+
+장치가 없거나 여러 개 발견되거나 권한이 없으면 시작을 중단합니다.
+FT232R이라는 이름만으로 CAN 어댑터임을 보장할 수 없으므로 여러 어댑터를
+연결한 환경에서는 장치 식별을 별도로 구성해야 합니다.
+독립 실행하는 모터 Enable / CAN 노드에는 런처의 자동 탐색이 적용되지 않습니다.
+
+## MicroStrain USB 장치 자동 탐색 (통합 런처)
+
+`one_command_launch.py`는 실행할 때마다 `/dev/serial/by-id/`에서 이름에
+`Microstrain`이 포함된 장치를 대소문자 구분 없이 탐색합니다.
+USB 시리얼 번호가 변경되어도 원래 `amr_imu/config/microstrain.yml`은 변경하지 않고,
+`~/amr_one_command_logs/microstrain_runtime.yml`에 실행 전용 설정을 생성하여
+MicroStrain ROS 드라이버에 전달합니다. `--log-dir`을 지정한 경우 해당 디렉터리를 사용합니다.
+
+연결된 장치가 없거나 둘 이상 있거나 읽기/쓰기 권한이 없으면 안전하게 시작을 중단합니다.
+`--skip-imu` 또는 `--external-imu-driver`를 사용하면 자동 탐색하지 않습니다.
+**직접 실행하는 `ros2 launch microstrain_inertial_driver ...`에는 이 자동 탐색이 적용되지 않습니다.**
+
 ## 8. IMU (필요할 때)
 
 **터미널 F — MicroStrain 드라이버:**
