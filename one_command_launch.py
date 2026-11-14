@@ -192,6 +192,57 @@ def verify_ros_numpy_environment(env: dict[str, str], py: str) -> None:
     print(f'[PYTHON] ROS/NumPy import OK: {result.stdout.strip()}', flush=True)
 
 
+
+def camera_slam_environment(env: dict[str, str], camera_python: str) -> dict[str, str]:
+    """Prefer the Python Orbbec SDK's native library for camera subprocess only.
+
+    ROS Jazzy's /opt/ros/jazzy/lib may contain a different libOrbbecSDK.so.2.
+    Preserve all the existing ROS library directories after the Orbbec directory.
+    """
+    locate = (
+        'import importlib.util, pathlib; '
+        'spec=importlib.util.find_spec("pyorbbecsdk"); '
+        'paths=list(spec.submodule_search_locations or []) if spec else []; '
+        'p=pathlib.Path(paths[0]) if len(paths)==1 else None; '
+        'lib=(p / "libOrbbecSDK.so.2") if p else None; '
+        'print(lib if lib and lib.is_file() else "")'
+    )
+    try:
+        result = subprocess.run(
+            [camera_python, '-c', locate], env=env, cwd=ROOT,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LaunchError(f'Camera SLAM native library discovery failed: {exc}') from exc
+    library = result.stdout.strip()
+    if result.returncode or not library or not Path(library).is_file():
+        raise LaunchError(
+            'Camera SLAM requires pyorbbecsdk with bundled libOrbbecSDK.so.2. '
+            f'Python={camera_python}; detail={(result.stderr or result.stdout).strip()[-500:]}'
+        )
+    camera_env = env.copy()
+    sdk_dir = str(Path(library).parent)
+    original = camera_env.get('LD_LIBRARY_PATH', '')
+    camera_env['LD_LIBRARY_PATH'] = os.pathsep.join(
+        [sdk_dir] + [path for path in original.split(os.pathsep) if path and path != sdk_dir]
+    )
+    probe = 'import pyorbbecsdk, rclpy, numpy; from sensor_msgs.msg import Image, CameraInfo'
+    try:
+        result = subprocess.run(
+            [camera_python, '-c', probe], env=camera_env, cwd=ROOT,
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LaunchError(f'Camera SLAM SDK/ROS import check failed: {exc}') from exc
+    if result.returncode:
+        raise LaunchError(
+            'Camera SLAM Orbbec and ROS imports failed together. '
+            f'Python={camera_python}; details={(result.stderr or result.stdout).strip()[-1200:]}'
+        )
+    print(f'[CAMERA] Orbbec/ROS import OK: {library}', flush=True)
+    return camera_env
+
+
 def configure_local_ros_network(env: dict[str, str]) -> None:
     """Limit managed ROS2 DDS traffic to loopback; fail on unknown middleware.
 
@@ -363,11 +414,13 @@ class Supervisor:
                 if is_fatal_child_line(child.name, line, child.fatal_markers):
                     child.fatal = line
 
-    def start(self, name: str, argv: list[str], *, ready_markers=(), fatal_markers=()) -> Child:
+    def start(self, name: str, argv: list[str], *, ready_markers=(), fatal_markers=(),
+              child_env: dict[str, str] | None = None) -> Child:
         print(f'\n[START] {name}: {shlex.join(argv)}', flush=True)
         try:
             process = subprocess.Popen(
-                argv, cwd=ROOT, env=self.env, stdout=subprocess.PIPE,
+                argv, cwd=ROOT, env=self.env if child_env is None else child_env,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                 errors='replace', bufsize=1, start_new_session=True,
             )
@@ -676,6 +729,8 @@ def main() -> int:
     py = shutil.which('python3', path=env.get('PATH')) or sys.executable
     verify_ros_numpy_environment(env, py)
     cam_py = choose_camera_python(args.camera_python, py)
+    camera_env = (camera_slam_environment(env, cam_py)
+                  if args.camera_slam and not args.skip_camera else None)
     # Bound ports are checked before CAN drive initialization begins.
     ports = []
     if not args.skip_web_ui:
@@ -727,7 +782,8 @@ def main() -> int:
                                             '--width', str(args.depth_width),
                                             '--height', str(args.depth_height),
                                             '--fps', str(args.depth_fps)],
-                                 fatal_markers=('[CAMERA ERROR]',))
+                                 fatal_markers=('[CAMERA ERROR]',),
+                                 child_env=camera_env)
                 supervisor.wait_topic('Depth camera', '/camera/depth/image_raw',
                                       'sensor_msgs/msg/Image', 45, best_effort=True)
                 supervisor.wait_topic('Depth intrinsics',
