@@ -211,6 +211,19 @@ cd ~/hana-amr-project
 python3 -u one_command_launch.py --camera-slam --web-drive --host-ip 192.168.0.250 --see-log
 ```
 
+**Orbbec native SDK 경로 충돌 대응:** 새 IPC에서 Python 패키지
+`pyorbbecsdk`가 제공하는 `libOrbbecSDK.so.2`와
+`/opt/ros/jazzy/lib/libOrbbecSDK.so.2`가 공존하면 ROS 라이브러리
+검색 경로가 우선되어 `undefined symbol: ob_device_load_preset_by_depth_work_mode_version`
+오류가 발생할 수 있습니다. `--camera-slam` 모드에서만 Python 패키지의
+Orbbec 라이브러리 폴더를 **카메라 자식 프로세스**의
+`LD_LIBRARY_PATH` 맨 앞에 자동으로 추가합니다. 기존 ROS 경로는
+뒤에 그대로 유지하므로 `librcl_action.so` 등의 ROS2 라이브러리도
+계속 검색됩니다. 다른 노드, 부모 셸, 시스템 라이브러리 설치는
+수정하지 않습니다. 카메라 시작 전에 `pyorbbecsdk`, `rclpy`,
+`numpy`, `sensor_msgs` 동시 import를 검증하고 실패 시 시작을
+중단합니다.
+
 Depth 전용 실행 Python 환경에는 `numpy`, `rclpy`,
 `sensor_msgs`, `pyorbbecsdk`가 필요합니다. 환경이 분리되어 있다면
 `--camera-python`으로 해당 패키지를 모두 import할 수 있는 인터프리터를
